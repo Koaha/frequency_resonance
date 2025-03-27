@@ -16,7 +16,7 @@ def setup_logging() -> None:
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         handlers=[
             logging.StreamHandler(),
-            logging.FileHandler(paths.OUTPUT_DIR / 'report_generation.log')
+            logging.FileHandler(paths.LOG_OUTPUT_DIR / 'report_generation.log')
         ]
     )
 

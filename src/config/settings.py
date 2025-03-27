@@ -13,12 +13,13 @@ class PathConfig:
     BASE_DIR = Path(__file__).parent.parent.parent
     DATA_DIR = BASE_DIR / "data"
     OUTPUT_DIR = BASE_DIR / "output"
+    LOG_OUTPUT_DIR = OUTPUT_DIR / "logs"
     SEGMENT_DIR = OUTPUT_DIR / "segments"
     FEATURE_DIR = OUTPUT_DIR / "features"
     REPORT_DIR = OUTPUT_DIR / "reports"
 
     def __post_init__(self):
-        for path in [self.OUTPUT_DIR, self.SEGMENT_DIR, self.FEATURE_DIR, self.REPORT_DIR]:
+        for path in [self.OUTPUT_DIR, self.SEGMENT_DIR, self.FEATURE_DIR, self.REPORT_DIR, self.LOG_OUTPUT_DIR]:
             path.mkdir(parents=True, exist_ok=True)
 
 config = SignalConfig()
