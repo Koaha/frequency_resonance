@@ -5,6 +5,7 @@ from pathlib import Path
 import datetime as dt
 from typing import Dict, List, Tuple, Optional
 from dataclasses import dataclass
+import logging
 from .config import ResonanceConfig  # Add this import
 from tqdm import tqdm
 
@@ -23,6 +24,7 @@ class DataManager:
     
     def __init__(self, config: ResonanceConfig):
         self.config = config
+        self.logger = logging.getLogger(__name__)
 
     def load_patient_files(self) -> pd.DataFrame:
         """Load and organize patient files."""
@@ -75,7 +77,8 @@ class DataManager:
         
         first_segment_time = dt.datetime.strptime(
             Path(df_patient['segment_path'].iloc[0]).stem.split("_")[0],
-            '%Y%m%dT%H%M%S'
+            # '%Y%m%dT%H%M%S'
+            '%Y%m%dT%H%M%S.%f%z'
         )
         day1_date = first_segment_time.date()
         
@@ -133,7 +136,7 @@ class DataManager:
         path = Path(segment_path)
         parts = path.stem.split("_")
         
-        start_time = dt.datetime.strptime(parts[0], '%Y%m%dT%H%M%S')
+        start_time = dt.datetime.strptime(parts[0], '%Y%m%dT%H%M%S.%f%z')
         offset = int(parts[1]) / self.config.fs
         
         segment_start = start_time + dt.timedelta(seconds=offset)

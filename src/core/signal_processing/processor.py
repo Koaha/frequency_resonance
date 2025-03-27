@@ -3,7 +3,7 @@ from pathlib import Path
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from tqdm import tqdm
-from typing import List
+from typing import List, Dict
 from .config import SignalConfig
 from .signal_processor import SignalProcessor
 from .segment_handler import SegmentHandler
@@ -57,10 +57,11 @@ class SignalProcessingPipeline:
     def _prepare_output_dirs(self, file_path: Path) -> Dict[str, Path]:
         """Prepare output directories for a file."""
         folder = file_path.parent.name
+        patient_id = file_path.parents[2].name
         base_dirs = {
-            'segments': self.config.segment_dir / folder / file_path.stem / 'segments',
-            'rr': self.config.segment_dir / folder / file_path.stem / 'rr',
-            'features': self.config.feature_dir / folder / file_path.stem / 'features'
+            'segments': self.config.segment_dir / patient_id / 'data' /  'segments',
+            'rr': self.config.segment_dir / patient_id / 'data' / 'rr',
+            'features': self.config.feature_dir / patient_id / 'data' / 'features'
         }
         
         for dir_path in base_dirs.values():

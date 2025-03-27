@@ -23,8 +23,8 @@ report_duration = 30 * 60  # Duration of the report in seconds
 report_segment = int(report_duration // (step_size / fs))  # Number of segments in the report
 
 # Directory to save the segmented data
-BASE_WORK_DIR = "/media/data/Workspace/24EIa/src/output"
-FEATURE_OUTPUT_DIR = "src/output/Feature_Data_24EI"
+BASE_WORK_DIR = "D:/Workspace/Data/24EIa/output"
+FEATURE_OUTPUT_DIR = "D:/Workspace/Data/24EIa/output/Feature_Data_24EI"
 
 # Helper functions
 def list_files(directory):
@@ -39,26 +39,30 @@ def list_files(directory):
 def get_df(directory):
     file_list = list_files(directory)
     df = pd.DataFrame(columns=['path'], data=np.sort(file_list))
-    df['patient_id'] = df['path'].apply(lambda x: x.split('/')[3])
-    df['file_id'] = df['path'].apply(lambda x: x.split('/')[-1].split('_')[0])
-    df['start'] = df['path'].apply(lambda x: x.split('/')[-1].split('_')[1])
-    df['end'] = df['path'].apply(lambda x: x.split('/')[-1].split('_')[2].split('.')[0])
+    # df['patient_id'] = df['path'].apply(lambda x: x.split('/')[3])
+    df['patient_id'] = df['path'].apply(lambda x: x.split('/')[-1].split('\\')[1])
+    # df['file_id'] = df['path'].apply(lambda x: x.split('/')[-1].split('_')[0])
+    df['file_id'] = df['path'].apply(lambda x: x.split('/')[-1].split('\\')[-1])
+    # df['start'] = df['path'].apply(lambda x: x.split('/')[-1].split('_')[1])
+    df['start'] = df['path'].apply(lambda x: x.split('/')[-1].split('\\')[-1].split('_')[1])
+    # df['end'] = df['path'].apply(lambda x: x.split('/')[-1].split('_')[2].split('.')[0])
+    df['end'] = df['path'].apply(lambda x: x.split('/')[-1].split('\\')[-1].split('_')[2])
     return df
 
-def join_event(chunk):
-    df_event_features = None
-    for feature_file in chunk['path'].values:
-        if df_event_features is None:
-            df_event_features = pd.read_csv(feature_file)
-        else:
-            df_event_features = pd.concat([df_event_features, pd.read_csv(feature_file)])
-    return df_event_features
+# def join_event(chunk):
+#     df_event_features = None
+#     for feature_file in chunk['path'].values:
+#         if df_event_features is None:
+#             df_event_features = pd.read_csv(feature_file)
+#         else:
+#             df_event_features = pd.concat([df_event_features, pd.read_csv(feature_file)])
+#     return df_event_features
 
 def prepare_report_data(chunk):
-    df_event_feature = join_event(chunk)
-    df_event_feature['start'] = df_event_feature['start'].astype(int)
-    df_event_feature = df_event_feature.sort_values(by='start')
-    n = 3
+    # df_event_feature = join_event(chunk)
+    # df_event_feature['start'] = df_event_feature['start'].astype(int)
+    # df_event_feature = df_event_feature.sort_values(by='start')
+    # n = 3
     selected_columns_df = df_event_feature.iloc[:, :-n]
     selected_columns_df = selected_columns_df.astype(float)
     feature_data = selected_columns_df.to_dict(orient='list')

@@ -33,8 +33,16 @@ class FeatureProcessor:
             feature_data = feature_data.sort_values(by='start')
 
             # Select all columns except the last n
-            n = 3  # Number of columns to exclude
-            selected_columns = feature_data.iloc[:, :-n]
+            # n = 3  # Number of columns to exclude
+            # selected_columns = feature_data.iloc[:, :-n]
+            # Define columns to exclude (non-numeric metadata)
+            exclude_columns = ['file_path', 'patient_id', 'day1_date', 'start', 'end']
+            
+            # Select only numeric columns, excluding metadata
+            numeric_columns = feature_data.select_dtypes(include=[np.number]).columns
+            selected_columns = feature_data[numeric_columns].drop(columns=exclude_columns, errors='ignore')
+            
+            # Convert to float type
             selected_columns = selected_columns.astype(float)
 
             # Convert to dictionary format

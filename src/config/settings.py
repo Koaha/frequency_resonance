@@ -6,7 +6,7 @@ from dataclasses import dataclass
 class SignalConfig:
     fs: int = 100  # Sampling frequency
     duration: int = 60 * 5  # Duration of each window (5 minutes)
-    step_size: int = 100 * 30  # Step size (30 seconds)
+    step_size: int = fs * 60 * 5  # Step size (30 seconds)
 
 @dataclass
 class PathConfig:

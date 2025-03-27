@@ -6,6 +6,7 @@ from typing import Optional
 import logging
 from .signal_processor import SignalData
 from .feature_extractor import FeatureExtractor
+from .config import SignalConfig
 
 class SegmentHandler:
     """Manages the processing and storage of signal segments."""
@@ -20,7 +21,7 @@ class SegmentHandler:
         signal_data: SignalData,
         start: int,
         end: int,
-        output_dirs: Dict[str, Path]
+        output_dirs: dict[str, Path]
     ) -> bool:
         """Process a single signal segment."""
         try:
@@ -56,9 +57,9 @@ class SegmentHandler:
         file_path: Path,
         start: int,
         end: int,
-        features: Dict,
+        features: dict,
         rr_intervals: np.ndarray,
-        output_dirs: Dict[str, Path]
+        output_dirs: dict[str, Path]
     ) -> None:
         """Save segment data, features, and RR intervals."""
         base_name = f"{file_path.stem}_{start}_{end}"
