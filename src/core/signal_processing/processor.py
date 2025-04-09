@@ -43,7 +43,11 @@ class SignalProcessingPipeline:
             return True
             
         except Exception as e:
+            import traceback
             self.logger.error(f"Error processing file {file_path}: {e}")
+            self.logger.error(f"Error type: {type(e)}")
+            self.logger.error(f"Traceback: {traceback.format_exc()}")
+            # self.logger.error(f"Error processing file {file_path}: {e}")
             return False
 
     def process_files(self, max_workers: int = 4) -> None:

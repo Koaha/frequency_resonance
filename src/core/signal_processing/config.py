@@ -1,18 +1,36 @@
 # src/core/signal_processing/config.py
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
+import json
+import os
+
+def load_config():
+    """Load configuration from JSON file."""
+    config_path = os.path.join(os.path.dirname(__file__), "config.json")
+    try:
+        with open(config_path, 'r') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        print(f"Config file not found at {config_path}, using default values")
+        return {}
+    except json.JSONDecodeError:
+        print(f"Error parsing config file {config_path}, using default values")
+        return {}
+
+# Load config once at module level
+CONFIG = load_config()
 
 @dataclass
 class SignalConfig:
     """Configuration for signal processing pipeline."""
     # Processing mode
-    mode: str = "directory"  # Options: "directory" or "file_list"
+    mode: str = CONFIG.get("mode", "directory")  # Options: "directory" or "file_list"
     
     # Base paths
-    output_base: Path = Path('D:\Workspace\Data\\24EIa/output')
-    data_dir: Path = Path('D:\Workspace\Data\\24EIa/input')
-    file_list_path: Path = None  # Path to CSV file containing list of files to process
+    output_base: Path = Path(CONFIG.get("output_base", 'W:/Workspace/Data/24EIa/output'))
+    data_dir: Path = Path(CONFIG.get("data_dir", 'W:/Workspace/Data/24EIa/input'))
+    file_list_path: Optional[Path] = Path(CONFIG.get("file_list_path")) if CONFIG.get("file_list_path") else None
     
     # Derived paths
     SEGMENT_PATH: Path = output_base / 'Segmented_Data_24EI'
@@ -24,21 +42,21 @@ class SignalConfig:
     feature_dir: Path = FEATURE_PATH
     
     # Signal processing parameters
-    fs: int = 100
-    duration: int = 300  # 5 minutes in seconds
-    step_size: int = 300  # 5 minutes in seconds
-    lowcut: float = 0.5
-    highcut: float = 20.0
-    nperseg: int = 1024
+    fs: int = CONFIG.get("fs", 100)
+    duration: int = CONFIG.get("duration", 180)
+    step_size: int = CONFIG.get("step_size", 180)
+    lowcut: float = CONFIG.get("lowcut", 0.5)
+    highcut: float = CONFIG.get("highcut", 20.0)
+    nperseg: int = CONFIG.get("nperseg", 1024)
 
     
     # Peak detection parameters
-    peak_height_percentile: float = 95
-    peak_distance: int = 5
+    peak_height_percentile: float = CONFIG.get("peak_height_percentile", 95)
+    peak_distance: int = CONFIG.get("peak_distance", 5)
     
     # Processing parameters
-    max_workers: int = 4
-    batch_size: int = 100
+    max_workers: int = CONFIG.get("max_workers", 4)
+    batch_size: int = CONFIG.get("batch_size", 100)
     
     def __post_init__(self):
         """Create output directories after initialization."""
@@ -56,9 +74,9 @@ class SignalConfig:
     @staticmethod
     def get_harmonic_frequencies() -> Dict[str, List[float]]:
         """Get element harmonic frequencies."""
-        return {
+        return CONFIG.get("harmonic_frequencies", {
             'Mg': [4.0],
             'Ca': [6.0],
             'Fe': [12.0],
             'Zn': [18.0]
-        } 
+        })

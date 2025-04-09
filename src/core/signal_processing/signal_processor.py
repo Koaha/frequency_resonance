@@ -119,13 +119,44 @@ class SignalProcessor:
                 # Handle PPG files as before
                 df = pd.read_csv(file_path)
                 start_datetime = dt.datetime.strptime(
-                    file_path.stem, 
-                    '%Y%m%dT%H%M%S.%f%z'
+                    file_path.stem.split("_")[2],
+                    '%d.%m.%Y.%H.%M.%S' 
+                    # '%Y%m%dT%H%M%S.%f%z'
                 )
                 
-                signal = np.array(df['PLETH'].values)
-                timestamp_ms = np.array(df['TIMESTAMP_MS'].values)
-                timestamps = start_datetime + pd.to_timedelta(timestamp_ms, unit='ms')
+                # signal = np.array(df['PLETH'].values)
+                # timestamp_ms = np.array(df['TIMESTAMP_MS'].values)
+                # timestamps = start_datetime + pd.to_timedelta(timestamp_ms, unit='ms')
+                # Parse the array strings and flatten them
+                try:
+                    #New format of csv file
+                    df = df.rename(columns={'pleth': 'PLETH', 'timestamp': 'TIMESTAMP_MS'})
+                    # If PLETH column contains string representations of arrays
+                    pleth_arrays = df['PLETH'].apply(lambda x: eval(x) if isinstance(x, str) else x)
+                    signal = np.concatenate(pleth_arrays.values)
+                    
+                    # Handle datetime string timestamps
+                    if isinstance(df['TIMESTAMP_MS'].iloc[0], str):
+                        # Convert datetime strings to datetime objects
+                        base_timestamps_dt = pd.to_datetime(df['TIMESTAMP_MS']).dt.floor('S')
+                        
+                        # Generate 100 timestamps per second
+                        all_timestamps = []
+                        for ts in base_timestamps_dt:
+                            # Create 100 evenly spaced timestamps within this second
+                            second_start = ts
+                            offsets = pd.to_timedelta(np.linspace(0, 990, 100), unit='ms')
+                            all_timestamps.append(second_start + offsets)
+                        
+                        # Flatten the list of timestamps
+                        timestamps = pd.concat([pd.Series(ts_array) for ts_array in all_timestamps]).reset_index(drop=True)
+                except Exception as e:
+                    self.logger.error(f"Error processing PPG data: {e}")
+                    # Fallback to direct column access
+                    signal = np.array(df['PLETH'].values)
+                    timestamp_ms = np.array(df['TIMESTAMP_MS'].values)
+                    timestamps = start_datetime + pd.to_timedelta(timestamp_ms, unit='ms')
+                    
                 
                 return SignalData(
                     signal=signal,
