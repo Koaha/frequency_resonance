@@ -26,6 +26,18 @@ dist/
 .env.test.local
 .env.production.local
 
+# Report files
+old_plots/
+old_summaries/
+old_reports/
+
+# Plots
+plots/
+
+# MLFlow 
+mlruns/
+mlruns/*
+
 # Virtual environments
 .venv/
 venv/
@@ -52,6 +64,8 @@ src_files.zip
 
 # Data files
 *.csv
+*.xlsx
 
 # Jupyter Notebook checkpoints
 .ipynb_checkpoints/
+.qodo

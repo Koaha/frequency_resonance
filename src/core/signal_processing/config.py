@@ -10,12 +10,13 @@ class SignalConfig:
     mode: str = "directory"  # Options: "directory" or "file_list"
     
     # Base paths
-    output_base: Path = Path('D:\Workspace\Data\\24EIa/output')
-    data_dir: Path = Path('D:\Workspace\Data\\24EIa/input')
+    output_base: Path = Path('D:\Workspace\Data\\24EI/output')
+    # data_dir: Path = Path('D:\Workspace\Data\\24EIa/input')
+    data_dir: Path = Path('D:\Workspace\Data\\24EI\RAW_DATA')
     file_list_path: Path = None  # Path to CSV file containing list of files to process
     
     # Derived paths
-    SEGMENT_PATH: Path = output_base / 'Segmented_Data_24EI'
+    SEGMENT_PATH: Path = output_base / 'Segmented_Data_24EI'    
     FEATURE_PATH: Path = output_base / 'Feature_Data_24EI'
     OUTPUT_PATH: Path = output_base / 'signal_processing'
     

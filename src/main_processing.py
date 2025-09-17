@@ -19,7 +19,7 @@ def parse_args():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(description='Signal processing pipeline')
     parser.add_argument('--mode', type=str, choices=['directory', 'file_list'], 
-                       default='directory', help='Processing mode')
+                    default='directory', help='Processing mode')
     parser.add_argument('--file-list', type=str, help='Path to CSV file containing list of files to process')
     parser.add_argument('--data-dir', type=str, help='Directory containing data files to process')
     parser.add_argument('--output-dir', type=str, help='Output directory for processed files')
@@ -46,7 +46,7 @@ def main():
     setup_logging(config.output_base)
     logger = logging.getLogger(__name__)
     
-    try:
+    try:    
         pipeline = SignalProcessingPipeline(config)
         pipeline.process_files()
         logger.info("Processing completed successfully")

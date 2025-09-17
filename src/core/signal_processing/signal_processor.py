@@ -117,11 +117,22 @@ class SignalProcessor:
                 
             else:
                 # Handle PPG files as before
-                df = pd.read_csv(file_path)
-                start_datetime = dt.datetime.strptime(
-                    file_path.stem, 
-                    '%Y%m%dT%H%M%S.%f%z'
-                )
+                # with open(file_path, encoding="utf-8", errors="ignore") as f:
+                #     df = pd.read_csv(f)
+
+                df = pd.read_csv(file_path, encoding="latin1", on_bad_lines="skip")
+                
+                try:
+                    # Extract date from file path (e.g., 21122018 from the path)
+                    date_str = str(file_path).split('/')[-3]  # Get the date folder name
+                    # Parse the date (ddmmyyyy format) and set time to noon
+                    start_datetime = dt.datetime.strptime(date_str, '%d%m%Y').replace(
+                        hour=12, minute=0, second=0, microsecond=0
+                    )
+                except (ValueError, IndexError) as e:
+                    # Set default to 4 years before today
+                    start_datetime = dt.datetime.now() - dt.timedelta(days=4*365)
+                    self.logger.warning(f"Could not parse datetime from file path {file_path}, using default date: {start_datetime}")
                 
                 signal = np.array(df['PLETH'].values)
                 timestamp_ms = np.array(df['TIMESTAMP_MS'].values)

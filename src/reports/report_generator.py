@@ -139,7 +139,7 @@ class ReportGenerator:
                     patient_id, file_path = future_to_group[future]
                     try:
                         report_path = future.result()
-                        if report_path:
+                        if report_path: 
                             report_paths.append(report_path)
                             self.logger.info(f"Successfully generated report for patient {patient_id} from {file_path}")
                         else:
