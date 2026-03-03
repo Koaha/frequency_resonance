@@ -5,18 +5,22 @@ import pandas as pd
 from reports import ReportGenerator, ReportConfig
 from core.resonance.data_manager import DataManager
 from core.resonance.config import ResonanceConfig
-from config.settings import paths
+from config.settings import load_config, resolve_path
 import os
 import datetime as dt
 
+
 def setup_logging() -> None:
     """Configure logging for report generation."""
+    cfg = load_config()
+    log_dir = resolve_path(cfg.get("output_dir", "output")) / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         handlers=[
             logging.StreamHandler(),
-            logging.FileHandler(paths.LOG_OUTPUT_DIR / 'report_generation.log')
+            logging.FileHandler(log_dir / 'report_generation.log')
         ]
     )
 

@@ -1,26 +1,29 @@
 # src/config/settings.py
+"""Central config loader — every module reads from config.yaml through here."""
 from pathlib import Path
-from dataclasses import dataclass
+from typing import Any, Dict
+import yaml
 
-@dataclass
-class SignalConfig:
-    fs: int = 100  # Sampling frequency
-    duration: int = 60 * 5  # Duration of each window (5 minutes)
-    step_size: int = fs * 60 * 5  # Step size (30 seconds)
+BASE_DIR = Path(__file__).parent.parent.parent          # project root
+DEFAULT_CONFIG_PATH = BASE_DIR / "config.yaml"
 
-@dataclass
-class PathConfig:
-    BASE_DIR = Path(__file__).parent.parent.parent
-    DATA_DIR = BASE_DIR / "data"
-    OUTPUT_DIR = BASE_DIR / "output"
-    LOG_OUTPUT_DIR = OUTPUT_DIR / "logs"
-    SEGMENT_DIR = OUTPUT_DIR / "segments"
-    FEATURE_DIR = OUTPUT_DIR / "features"
-    REPORT_DIR = OUTPUT_DIR / "reports"
+_cache: Dict[str, Any] = {}
 
-    def __post_init__(self):
-        for path in [self.OUTPUT_DIR, self.SEGMENT_DIR, self.FEATURE_DIR, self.REPORT_DIR, self.LOG_OUTPUT_DIR]:
-            path.mkdir(parents=True, exist_ok=True)
 
-config = SignalConfig()
-paths = PathConfig()
+def load_config(yaml_path: Path = DEFAULT_CONFIG_PATH) -> Dict[str, Any]:
+    """Load and cache the YAML config (one disk read per path)."""
+    key = str(yaml_path)
+    if key not in _cache:
+        if yaml_path.exists():
+            with open(yaml_path) as f:
+                _cache[key] = yaml.safe_load(f) or {}
+        else:
+            _cache[key] = {}
+    return _cache[key]
+
+
+def resolve_path(raw: Any, base: Path = BASE_DIR) -> Path:
+    """Turn a config value into an absolute Path (relative paths resolve
+    against the project root)."""
+    p = Path(raw)
+    return p if p.is_absolute() else base / p

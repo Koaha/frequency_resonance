@@ -1,0 +1,119 @@
+# ── Frequency Resonance Pipeline Configuration ──────────────────────────────
+# All paths are relative to the project root (where this file lives),
+# unless they are absolute.  Override any value via CLI flags.
+
+# ── I/O ─────────────────────────────────────────────────────────────────────
+mode: directory            # "directory" or "file_list"
+data_dir: data
+output_dir: output
+file_list_path: null       # only used when mode == file_list
+
+# ── Data loading (OUCRU SmartCare CSV) ──────────────────────────────────────
+data_format: OUCRU_CSV
+signal_column: pleth       # column to extract: pleth | ir | red
+
+# ── Signal processing ──────────────────────────────────────────────────────
+sampling_rate: 100         # Hz
+segment_duration: 300      # seconds (5 min)
+step_size: 300             # seconds (5 min)
+lowcut: 0.5                # bandpass low  (Hz)
+highcut: 20.0              # bandpass high (Hz)
+nperseg: 1024              # FFT segment length
+
+# ── SQI (Signal Quality Index) ──────────────────────────────────────────────
+# Each SQI metric can have its own threshold and threshold_type.
+# threshold_type options: below | above | range
+# Set enabled: false to skip a metric entirely.
+#
+# The "primary_sqi" decides which metric is used to select segments
+# for downstream processing (RR extraction, feature extraction).
+primary_sqi: signal_entropy_sqi
+
+sqi:
+  signal_entropy_sqi:
+    enabled: true
+    threshold: -2
+    threshold_type: below
+
+  snr_sqi:
+    enabled: true
+    threshold: -2
+    threshold_type: below
+
+  kurtosis_sqi:
+    enabled: true
+    threshold: -2
+    threshold_type: below
+
+  skewness_sqi:
+    enabled: true
+    threshold: -2
+    threshold_type: below
+
+  zero_crossing_sqi:
+    enabled: true
+    threshold: -2
+    threshold_type: below
+
+  energy_sqi:
+    enabled: true
+    threshold: -2
+    threshold_type: below
+
+  amplitude_variability_sqi:
+    enabled: true
+    threshold: -2
+    threshold_type: below
+
+  baseline_wander_sqi:
+    enabled: true
+    threshold: -2
+    threshold_type: below
+
+  peak_to_peak_amplitude_sqi:
+    enabled: true
+    threshold: -2
+    threshold_type: below
+
+  ppg_signal_quality_sqi:
+    enabled: true
+    threshold: -2
+    threshold_type: below
+
+  respiratory_signal_quality_sqi:
+    enabled: true
+    threshold: -2
+    threshold_type: below
+
+# ── Peak detection ──────────────────────────────────────────────────────────
+peak_height_percentile: 95
+peak_distance: 5
+
+# ── Feature extraction ──────────────────────────────────────────────────────
+# HRV + morphology extraction is CPU-heavy (~2 min / segment).
+# Set to false to only produce SQI + RR outputs quickly.
+extract_features: false
+
+# ── Processing ──────────────────────────────────────────────────────────────
+max_workers: 4
+batch_size: 100
+
+# ── Harmonic / resonance frequencies ────────────────────────────────────────
+harmonic_frequencies:
+  Mg: [4.0]
+  Ca: [6.0]
+  Fe: [12.0]
+  Zn: [18.0]
+
+# ── Reports ─────────────────────────────────────────────────────────────────
+reports:
+  report_dir: output/reports
+  event_dir: null            # path to event data, if any
+
+# ── Analysis (Dengue_69DX) ──────────────────────────────────────────────────
+# Moved to archived/analysis/. Uncomment if needed.
+# analysis:
+#   adult_path: data/Adults
+#   child_path: data/Children
+#   sc_instruction_path: data/SC_data.csv
+#   processed_output: output/processed_data.csv

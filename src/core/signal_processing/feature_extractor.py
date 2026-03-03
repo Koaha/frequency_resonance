@@ -49,7 +49,7 @@ class FeatureExtractor:
             rr_intervals = rr_transformer.compute_rr_intervals(
                 preprocess_config=config,
                 peak_config=peak_config
-            ) * 1000  # convert to ms
+            )  # already in ms
             # Compute HRV features
             hrv_features = HRVFeatures(
                 signal, 

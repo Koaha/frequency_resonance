@@ -1,28 +1,45 @@
 # src/reports/config.py
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from config.settings import paths
+from config.settings import load_config, resolve_path
+
 
 @dataclass
 class ReportConfig:
     """Configuration for report generation.
-    
-    Attributes:
-        fs (int): Sampling frequency in Hz
-        duration (int): Duration of each window in seconds
-        step_size (int): Step size between windows in samples
-        base_work_dir (Path): Base working directory for report generation
-        segment_dir (Path): Directory for segmented data
-        feature_dir (Path): Directory for feature data
-        event_dir (Path): Directory for event data
+
+    All values are loaded from config.yaml.
     """
     fs: int = 100
-    duration: int = 300  # 5 minutes
-    step_size: int = 3000  # 30 seconds * fs
-    base_work_dir: Path = paths.BASE_DIR / "analysis"
-    # segment_dir: Path = base_work_dir / "Segmented_Data/Data"
-    segment_dir: Path = Path("D:\Workspace\Data\\24EIa\output\Segmented_Data_24EI")
-    # feature_dir: Path = base_work_dir / "Feature_Data/Data"
-    feature_dir: Path = Path("D:\Workspace\Data\\24EIa\output\Feature_Data_24EI")
-    # event_dir: Path = base_work_dir / "Event_Data"
-    event_dir: Path = Path("D:\Workspace\Data\\24EIa\output\Feature_Data_24EI")
+    duration: int = 300
+    step_size: int = 300
+
+    base_work_dir: Path = field(default=None)
+    segment_dir: Path = field(default=None)
+    feature_dir: Path = field(default=None)
+    event_dir: Path = field(default=None)
+    report_dir: Path = field(default=None)
+
+    def __post_init__(self):
+        cfg = load_config()
+        out = resolve_path(cfg.get("output_dir", "output"))
+        reports_cfg = cfg.get("reports", {}) or {}
+
+        self.fs = cfg.get("sampling_rate", self.fs)
+        self.duration = cfg.get("segment_duration", self.duration)
+        self.step_size = cfg.get("step_size", self.step_size)
+
+        if self.base_work_dir is None:
+            self.base_work_dir = out
+        if self.segment_dir is None:
+            self.segment_dir = out / "segments"
+        if self.feature_dir is None:
+            self.feature_dir = out / "features"
+        if self.report_dir is None:
+            raw = reports_cfg.get("report_dir", "output/reports")
+            self.report_dir = resolve_path(raw)
+        if self.event_dir is None:
+            raw = reports_cfg.get("event_dir")
+            self.event_dir = resolve_path(raw) if raw else None
+
+        self.report_dir.mkdir(parents=True, exist_ok=True)

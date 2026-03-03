@@ -1,5 +1,5 @@
 # src/core/data_processor/line_processor.py
-from typing import List, Dict
+from typing import Dict, List, Optional
 import logging
 from pathlib import Path
 from .file_handler import FileHandler
