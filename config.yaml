@@ -4,13 +4,15 @@
 
 # ── I/O ─────────────────────────────────────────────────────────────────────
 mode: directory            # "directory" or "file_list"
-data_dir: data
+data_dir: /media/data/Workspace/Data/62EI/RAW_DATA
 output_dir: output
 file_list_path: null       # only used when mode == file_list
 
 # ── Data loading (OUCRU SmartCare CSV) ──────────────────────────────────────
 data_format: OUCRU_CSV
-signal_column: pleth       # column to extract: pleth | ir | red
+signal_type: auto          # "auto" | "PPG" | "ECG" — auto detects from filename
+signal_column: pleth       # PPG column to extract: pleth | ir | red
+ecg_signal_column: ecg     # ECG column to extract (used when signal_type is ECG or auto-detected)
 
 # ── Signal processing ──────────────────────────────────────────────────────
 sampling_rate: 100         # Hz
@@ -21,14 +23,26 @@ highcut: 20.0              # bandpass high (Hz)
 nperseg: 1024              # FFT segment length
 
 # ── SQI (Signal Quality Index) ──────────────────────────────────────────────
-# Each SQI metric can have its own threshold and threshold_type.
-# threshold_type options: below | above | range
-# Set enabled: false to skip a metric entirely.
-#
-# The "primary_sqi" decides which metric is used to select segments
-# for downstream processing (RR extraction, feature extraction).
+# threshold_method: "value" (legacy per-metric cutoff) or "composite"
+#   (statistical scoring across all metrics — quantile, z-score, tail area,
+#    trapezoidal integration, rolling variance).
+# The "primary_sqi" is only used in "value" mode.
+threshold_method: composite     # "value" | "composite"
 primary_sqi: signal_entropy_sqi
 
+# ── Composite threshold config (used when threshold_method == composite) ────
+composite:
+  min_quantile: 10              # flag if quantile rank < 10th percentile
+  max_tail_area: 0.05           # flag if tail probability > 5%
+  max_modified_z: 3.0           # flag if |modified z-score| > 3
+  min_trapz_ratio: 0.3          # flag if trapezoidal-area ratio < 0.3
+  max_rolling_var: 2.0          # flag if local SQI variance > 2
+  weights: [0.25, 0.20, 0.20, 0.20, 0.15]   # quantile, tail, z, trapz, var
+  score_threshold: 0.5          # abnormal if composite score < this
+
+# ── Per-metric SQI config ──────────────────────────────────────────────────
+# "enabled" controls whether the metric is computed (both modes).
+# "threshold" / "threshold_type" are only used in "value" mode.
 sqi:
   signal_entropy_sqi:
     enabled: true

@@ -30,7 +30,14 @@ def parse_args():
     p.add_argument("--output-dir", type=str, default=None,
                    help="Output directory")
     p.add_argument("--signal-column", type=str, default=None,
-                   help="Signal column in OUCRU CSV (e.g. pleth, ir, red)")
+                   help="PPG signal column in OUCRU CSV (e.g. pleth, ir, red)")
+    p.add_argument("--signal-type", type=str, default=None,
+                   choices=["auto", "PPG", "ECG"],
+                   help="Signal type: auto (detect from filename), PPG, or ECG")
+    p.add_argument("--ecg-signal-column", type=str, default=None,
+                   help="ECG signal column in CSV (default: ecg)")
+    p.add_argument("--max-patients", type=int, default=0,
+                   help="Process only the first N patient folders (0 = all)")
     return p.parse_args()
 
 
@@ -50,6 +57,10 @@ def main():
         overrides["file_list_path"] = Path(args.file_list)
     if args.signal_column:
         overrides["signal_column"] = args.signal_column
+    if args.signal_type:
+        overrides["signal_type"] = args.signal_type
+    if args.ecg_signal_column:
+        overrides["ecg_signal_column"] = args.ecg_signal_column
 
     if yaml_path:
         config = SignalConfig.from_yaml(yaml_path, **overrides)
@@ -58,15 +69,15 @@ def main():
 
     setup_logging(config.output_base)
     logger = logging.getLogger(__name__)
-    logger.info(f"Config: signal_column={config.signal_column}, fs={config.fs}, "
-                f"duration={config.duration}s, data_dir={config.data_dir}")
+    logger.info(f"Config: signal_type={config.signal_type}, "
+                f"ppg_column={config.signal_column}, ecg_column={config.ecg_signal_column}, "
+                f"fs={config.fs}, duration={config.duration}s, data_dir={config.data_dir}")
 
     try:
         pipeline = SignalProcessingPipeline(config)
-        pipeline.process_files()
+        pipeline.process_files(max_patients=args.max_patients)
         logger.info("Processing completed successfully")
-        logger.info(f"SQI  JSONs -> {config.sqi_dir}")
-        logger.info(f"RR   JSONs -> {config.rr_dir}")
+        logger.info(f"Outputs written under {config.output_base} (mirroring data_dir hierarchy, one folder per file)")
     except Exception as e:
         logger.error(f"Processing failed: {e}")
         raise

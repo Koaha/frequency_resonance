@@ -3,10 +3,13 @@ from .config import SignalConfig
 from .processor import SignalProcessingPipeline
 from .signal_processor import SignalProcessor
 from .segment_handler import SegmentHandler
+from .sqi_scorer import CompositeConfig, score_windows
 
 __all__ = [
     'SignalConfig',
     'SignalProcessingPipeline',
     'SignalProcessor',
-    'SegmentHandler'
+    'SegmentHandler',
+    'CompositeConfig',
+    'score_windows',
 ]
