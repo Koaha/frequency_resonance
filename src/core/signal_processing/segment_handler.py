@@ -69,11 +69,12 @@ class SegmentHandler:
             timestamps = signal_data.timestamps[start:end]
             base_name = f"{signal_data.file_path.stem}_{start}_{end}"
 
-            # ── always: save segment CSV ─────────────────────────────────
-            pd.DataFrame({
-                "timestamp": timestamps,
-                "signal": segment,
-            }).to_csv(output_dirs["segments"] / f"{base_name}.csv", index=False)
+            # ── optionally save segment CSV ───────────────────────────────
+            if self.config.save_segments:
+                pd.DataFrame({
+                    "timestamp": timestamps,
+                    "signal": segment,
+                }).to_csv(output_dirs["segments"] / f"{base_name}.csv", index=False)
 
             # ── always: compute & save RR intervals ──────────────────────
             rr_intervals = self.compute_rr_intervals(

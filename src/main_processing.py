@@ -36,6 +36,8 @@ def parse_args():
                    help="Signal type: auto (detect from filename), PPG, or ECG")
     p.add_argument("--ecg-signal-column", type=str, default=None,
                    help="ECG signal column in CSV (default: ecg)")
+    p.add_argument("--save-segments", action="store_true", default=None,
+                   help="Save per-window segment CSVs (default: off, saves ~14 GB)")
     p.add_argument("--max-patients", type=int, default=0,
                    help="Process only the first N patient folders (0 = all)")
     return p.parse_args()
@@ -61,6 +63,8 @@ def main():
         overrides["signal_type"] = args.signal_type
     if args.ecg_signal_column:
         overrides["ecg_signal_column"] = args.ecg_signal_column
+    if args.save_segments is not None:
+        overrides["save_segments"] = args.save_segments
 
     if yaml_path:
         config = SignalConfig.from_yaml(yaml_path, **overrides)

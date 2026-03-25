@@ -25,7 +25,12 @@ class CompositeConfig:
     min_trapz_ratio: float = 0.3
     max_rolling_var: float = 2.0
     weights: List[float] = field(default_factory=lambda: [0.25, 0.20, 0.20, 0.20, 0.15])
-    score_threshold: float = 0.5
+    score_threshold: float = 0.7
+    # Absolute sanity bound: if any metric's raw value has |value| > this,
+    # the window is forced abnormal.  Catches degenerate cases where all
+    # windows in a file share the same extreme value (zero intra-file variance)
+    # so the relative statistics cannot detect the outlier.
+    abs_max_sqi: float = 10.0
 
     def __post_init__(self):
         if len(self.weights) != 5:
@@ -35,24 +40,41 @@ class CompositeConfig:
             self.weights = [w / total for w in self.weights]
 
 
+# ── helpers ──────────────────────────────────────────────────────────────────
+
+def _sanitize(values: np.ndarray) -> np.ndarray:
+    """Replace NaN/inf with the finite median (or 0 if all non-finite)."""
+    v = values.copy()
+    finite_mask = np.isfinite(v)
+    if finite_mask.all():
+        return v
+    if not finite_mask.any():
+        return np.zeros_like(v)
+    fill = np.median(v[finite_mask])
+    v[~finite_mask] = fill
+    return v
+
+
 # ── per-window feature functions ─────────────────────────────────────────────
 
 def _quantile_ranks(values: np.ndarray) -> np.ndarray:
     """Percentile rank of each value within the array (0–1)."""
-    n = len(values)
+    v = _sanitize(values)
+    n = len(v)
     if n < 2:
         return np.ones(n)
-    ranks = stats.rankdata(values, method="average")
+    ranks = stats.rankdata(v, method="average")
     return (ranks - 1) / (n - 1)
 
 
 def _modified_z_scores(values: np.ndarray) -> np.ndarray:
     """Robust z-scores using median and MAD."""
-    median = np.median(values)
-    mad = np.median(np.abs(values - median))
+    v = _sanitize(values)
+    median = np.median(v)
+    mad = np.median(np.abs(v - median))
     if mad < 1e-12:
-        return np.zeros_like(values)
-    return 0.6745 * (values - median) / mad
+        return np.zeros_like(v)
+    return 0.6745 * (v - median) / mad
 
 
 def _tail_probabilities(values: np.ndarray) -> np.ndarray:
@@ -62,13 +84,14 @@ def _tail_probabilities(values: np.ndarray) -> np.ndarray:
     tail (low values → left tail, high values → right tail).  Clamped to
     [0, 1] and oriented so that *lower* probability = more extreme.
     """
-    n = len(values)
+    v = _sanitize(values)
+    n = len(v)
     if n < 3:
         return np.full(n, 0.5)
-    mu, sigma = np.mean(values), np.std(values, ddof=1)
+    mu, sigma = np.mean(v), np.std(v, ddof=1)
     if sigma < 1e-12:
         return np.full(n, 0.5)
-    z = (values - mu) / sigma
+    z = (v - mu) / sigma
     return 2.0 * stats.norm.sf(np.abs(z))
 
 
@@ -94,14 +117,15 @@ def _trapz_ratios(signal: np.ndarray, window: int, step: int) -> np.ndarray:
 
 def _rolling_variances(values: np.ndarray, half_window: int = 2) -> np.ndarray:
     """Local variance of SQI values in a rolling window around each index."""
-    n = len(values)
+    v = _sanitize(values)
+    n = len(v)
     if n < 3:
         return np.zeros(n)
     out = np.empty(n)
     for i in range(n):
         lo = max(0, i - half_window)
         hi = min(n, i + half_window + 1)
-        out[i] = np.var(values[lo:hi], ddof=0)
+        out[i] = np.var(v[lo:hi], ddof=0)
     return out
 
 
@@ -137,7 +161,10 @@ def score_windows(
     if n_windows == 0:
         return _empty_result()
 
-    metrics = [m for m in sqi_values if len(sqi_values[m]) == n_windows]
+    metrics = [
+        m for m in sqi_values
+        if len(sqi_values[m]) == n_windows and np.any(np.isfinite(sqi_values[m]))
+    ]
     if not metrics:
         return _empty_result()
 
@@ -157,8 +184,6 @@ def score_windows(
         rv = _rolling_variances(vals)
 
         s_quantile = qr
-        s_tail = 1.0 - np.clip(tp / max(config.max_tail_area, 1e-12), 0, 1)
-        s_tail = np.clip(tp / config.max_tail_area, 0, 1)
         s_tail = np.where(tp >= config.max_tail_area, 1.0, tp / config.max_tail_area)
         s_mz = 1.0 / (1.0 + np.abs(mz) / config.max_modified_z)
         s_trapz = np.clip(trapz / max(config.min_trapz_ratio, 1e-12), 0, 1)
@@ -177,7 +202,23 @@ def score_windows(
         return _empty_result()
 
     all_scores = np.stack(list(per_metric_scores.values()), axis=0)
-    final_scores = np.mean(all_scores, axis=0)
+    final_scores = np.nanmean(all_scores, axis=0)
+    final_scores = np.where(np.isfinite(final_scores), final_scores, 0.0)
+
+    # Absolute sanity check: force windows to 0 if ANY metric's raw value
+    # exceeds abs_max_sqi.  This catches degenerate files where all windows
+    # share the same extreme value and the relative statistics can't detect it.
+    if config.abs_max_sqi > 0:
+        for metric in metrics:
+            vals = np.asarray(sqi_values[metric], dtype=float)
+            abs_outlier = np.abs(vals) > config.abs_max_sqi
+            if np.any(abs_outlier):
+                n_flagged = int(np.sum(abs_outlier))
+                logger.info(
+                    "abs_max_sqi: %d/%d windows in '%s' exceed ±%.1f — forced abnormal",
+                    n_flagged, n_windows, metric, config.abs_max_sqi,
+                )
+                final_scores[abs_outlier] = 0.0
 
     quality = ["normal" if s >= config.score_threshold else "abnormal" for s in final_scores]
 

@@ -32,6 +32,7 @@ sns.set_theme(style="whitegrid", palette="muted", font_scale=0.95)
 
 EXPECTED_SUBDIRS = {"segments", "features", "rr_intervals", "sqi"}
 PLOTS_SUBDIR = "plots"
+_PATIENTS_PER_PAGE = 25
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -73,6 +74,19 @@ def _save_fig(fig: plt.Figure, plots_dir: Path, name: str) -> str:
 
 def _extract_patient_id(path_str: str) -> str:
     return path_str.split("/")[0] if "/" in path_str else path_str
+
+
+def _embed_plots(w, value, alt_text: str):
+    """Embed one or more plot images into the markdown report."""
+    if not value:
+        return
+    if isinstance(value, list):
+        for p in value:
+            w(f"![{alt_text}]({p})")
+            w("")
+    else:
+        w(f"![{alt_text}]({value})")
+        w("")
 
 
 # ── scanning ─────────────────────────────────────────────────────────────────
@@ -192,67 +206,72 @@ def analyse_summary(output_base: Path) -> Dict[str, Any]:
 
 # ── plotting ─────────────────────────────────────────────────────────────────
 
-def plot_processing_overview(file_infos: List[Dict], plots_dir: Path) -> Optional[str]:
+def _draw_patient_stacked_bars(ax, patients, data_by_patient, all_types, colors_map,
+                               ylabel: str, title: str):
+    """Draw a stacked bar chart for a list of patients (reusable helper)."""
+    x = np.arange(len(patients))
+    bottom = np.zeros(len(patients))
+    for sig_t in all_types:
+        vals = [data_by_patient[p].get(sig_t, 0) for p in patients]
+        ax.bar(x, vals, bottom=bottom, label=sig_t,
+               color=colors_map.get(sig_t, "#7f8c8d"), edgecolor="white")
+        bottom += np.array(vals)
+    ax.set_xticks(x)
+    ax.set_xticklabels(patients, rotation=45, ha="right", fontsize=8)
+    ax.set_ylabel(ylabel)
+    ax.set_title(title)
+    ax.legend(fontsize=8)
+
+
+def plot_processing_overview(file_infos: List[Dict], plots_dir: Path) -> List[str]:
     valid = [f for f in file_infos if f.get("sqi_error") is None]
     if not valid:
-        return None
+        return []
 
-    fig, axes = plt.subplots(1, 3, figsize=(14, 4.5))
-
-    # 1) PPG vs ECG file count
-    types = Counter(f.get("signal_type", "N/A") for f in valid)
     colors_map = {"PPG": "#3498db", "ECG": "#e74c3c", "N/A": "#95a5a6"}
+    types = Counter(f.get("signal_type", "N/A") for f in valid)
     labels_t = sorted(types.keys())
     vals_t = [types[l] for l in labels_t]
     cols_t = [colors_map.get(l, "#7f8c8d") for l in labels_t]
-    bars = axes[0].bar(labels_t, vals_t, color=cols_t, edgecolor="white", width=0.5)
-    for bar, v in zip(bars, vals_t):
-        axes[0].text(bar.get_x() + bar.get_width() / 2, v + max(vals_t) * 0.02,
-                     str(v), ha="center", fontweight="bold")
-    axes[0].set_ylabel("Number of files")
-    axes[0].set_title("Files by Signal Type")
 
-    # 2) Per-patient breakdown stacked by signal type
     patient_type: Dict[str, Counter] = defaultdict(Counter)
-    for f in valid:
-        pid = _extract_patient_id(f["path"])
-        sig = f.get("signal_type", "N/A")
-        patient_type[pid][sig] += 1
-    patients_sorted = sorted(patient_type.keys())
-    all_types = sorted({t for c in patient_type.values() for t in c})
-    x = np.arange(len(patients_sorted))
-    bottom = np.zeros(len(patients_sorted))
-    for sig_t in all_types:
-        vals = [patient_type[p].get(sig_t, 0) for p in patients_sorted]
-        axes[1].bar(x, vals, bottom=bottom, label=sig_t,
-                    color=colors_map.get(sig_t, "#7f8c8d"), edgecolor="white")
-        bottom += np.array(vals)
-    axes[1].set_xticks(x)
-    axes[1].set_xticklabels(patients_sorted, rotation=45, ha="right", fontsize=8)
-    axes[1].set_ylabel("Number of files")
-    axes[1].set_title("Files per Patient (by type)")
-    axes[1].legend(fontsize=8)
-
-    # 3) Total recording hours per patient stacked by type
     patient_dur: Dict[str, Dict[str, float]] = defaultdict(lambda: defaultdict(float))
     for f in valid:
         pid = _extract_patient_id(f["path"])
         sig = f.get("signal_type", "N/A")
+        patient_type[pid][sig] += 1
         patient_dur[pid][sig] += f.get("total_duration_s", 0) / 3600
-    bottom = np.zeros(len(patients_sorted))
-    for sig_t in all_types:
-        vals = [patient_dur[p].get(sig_t, 0) for p in patients_sorted]
-        axes[2].bar(x, vals, bottom=bottom, label=sig_t,
-                    color=colors_map.get(sig_t, "#7f8c8d"), edgecolor="white")
-        bottom += np.array(vals)
-    axes[2].set_xticks(x)
-    axes[2].set_xticklabels(patients_sorted, rotation=45, ha="right", fontsize=8)
-    axes[2].set_ylabel("Hours")
-    axes[2].set_title("Recording Hours per Patient (by type)")
-    axes[2].legend(fontsize=8)
+    patients_sorted = sorted(patient_type.keys())
+    all_types = sorted({t for c in patient_type.values() for t in c})
 
+    # Summary figure (signal type totals only)
+    fig, ax = plt.subplots(figsize=(5, 4))
+    bars = ax.bar(labels_t, vals_t, color=cols_t, edgecolor="white", width=0.5)
+    for bar, v in zip(bars, vals_t):
+        ax.text(bar.get_x() + bar.get_width() / 2, v + max(vals_t) * 0.02,
+                str(v), ha="center", fontweight="bold")
+    ax.set_ylabel("Number of files")
+    ax.set_title("Files by Signal Type")
     fig.tight_layout()
-    return _save_fig(fig, plots_dir, "01_processing_overview")
+    paths = [_save_fig(fig, plots_dir, "01a_overview_summary")]
+
+    # Paginated per-patient detail plots
+    pages = [patients_sorted[i:i + _PATIENTS_PER_PAGE]
+             for i in range(0, len(patients_sorted), _PATIENTS_PER_PAGE)]
+    for page_idx, page_patients in enumerate(pages):
+        n_pages = len(pages)
+        suffix = f" (page {page_idx + 1}/{n_pages})" if n_pages > 1 else ""
+        fig, axes = plt.subplots(1, 2, figsize=(max(10, len(page_patients) * 0.55), 5))
+        _draw_patient_stacked_bars(axes[0], page_patients, patient_type, all_types,
+                                   colors_map, "Number of files",
+                                   f"Files per Patient{suffix}")
+        _draw_patient_stacked_bars(axes[1], page_patients, patient_dur, all_types,
+                                   colors_map, "Hours",
+                                   f"Recording Hours per Patient{suffix}")
+        fig.tight_layout()
+        paths.append(_save_fig(fig, plots_dir, f"01b_overview_patients_p{page_idx + 1}"))
+
+    return paths
 
 
 def plot_signal_type_and_duration(file_infos: List[Dict], plots_dir: Path) -> Optional[str]:
@@ -260,7 +279,7 @@ def plot_signal_type_and_duration(file_infos: List[Dict], plots_dir: Path) -> Op
     if not valid:
         return None
 
-    fig, axes = plt.subplots(1, 3, figsize=(14, 4))
+    fig, axes = plt.subplots(1, 2, figsize=(10, 4))
 
     types = [f.get("signal_type", "N/A") for f in valid]
     tc = Counter(types)
@@ -278,31 +297,21 @@ def plot_signal_type_and_duration(file_infos: List[Dict], plots_dir: Path) -> Op
         axes[1].set_ylabel("Count")
         axes[1].set_title("Recording Duration Distribution")
 
-    patients = Counter(_extract_patient_id(f["path"]) for f in valid)
-    p_labels = sorted(patients.keys())
-    p_vals = [patients[p] for p in p_labels]
-    bars = axes[2].bar(range(len(p_labels)), p_vals, color=sns.color_palette("Set2", len(p_labels)), edgecolor="white")
-    axes[2].set_xticks(range(len(p_labels)))
-    axes[2].set_xticklabels(p_labels, rotation=45, ha="right", fontsize=8)
-    axes[2].set_ylabel("Number of files")
-    axes[2].set_title("Files per Patient")
-    for bar, v in zip(bars, p_vals):
-        axes[2].text(bar.get_x() + bar.get_width() / 2, v + 0.3, str(v), ha="center", fontsize=8)
-
     fig.tight_layout()
     return _save_fig(fig, plots_dir, "02_signal_type_duration")
 
 
-def plot_segment_quality(file_infos: List[Dict], plots_dir: Path) -> Optional[str]:
+def plot_segment_quality(file_infos: List[Dict], plots_dir: Path) -> List[str]:
     valid = [f for f in file_infos if f.get("sqi_error") is None and f.get("total_segments", 0) > 0]
     if not valid:
-        return None
-
-    fig, axes = plt.subplots(1, 3, figsize=(14, 4.5))
+        return []
 
     normal = [f["normal_segments"] for f in valid]
     abnormal = [f["abnormal_segments"] for f in valid]
     ratios = [f["normal_segments"] / f["total_segments"] * 100 for f in valid]
+
+    # Summary figure
+    fig, axes = plt.subplots(1, 2, figsize=(10, 4.5))
 
     total_n = sum(normal)
     total_a = sum(abnormal)
@@ -317,18 +326,37 @@ def plot_segment_quality(file_infos: List[Dict], plots_dir: Path) -> Optional[st
     axes[1].axvline(np.median(ratios), color="#e67e22", ls="--", label=f"Median: {np.median(ratios):.0f}%")
     axes[1].legend()
 
-    idx = list(range(len(valid)))
-    sorted_data = sorted(zip(normal, abnormal), key=lambda x: x[0] + x[1], reverse=True)
-    sn, sa = zip(*sorted_data)
-    axes[2].bar(idx, sn, label="Normal", color="#2ecc71", edgecolor="white")
-    axes[2].bar(idx, sa, bottom=sn, label="Abnormal", color="#e74c3c", edgecolor="white")
-    axes[2].set_xlabel("File index (sorted by total)")
-    axes[2].set_ylabel("Segments")
-    axes[2].set_title("Segments per File")
-    axes[2].legend()
-
     fig.tight_layout()
-    return _save_fig(fig, plots_dir, "03_segment_quality")
+    paths = [_save_fig(fig, plots_dir, "03a_segment_quality_summary")]
+
+    # Paginated per-patient segment quality
+    patient_segs: Dict[str, Dict[str, int]] = defaultdict(lambda: {"normal": 0, "abnormal": 0})
+    for f in valid:
+        pid = _extract_patient_id(f["path"])
+        patient_segs[pid]["normal"] += f.get("normal_segments", 0)
+        patient_segs[pid]["abnormal"] += f.get("abnormal_segments", 0)
+    patients_sorted = sorted(patient_segs.keys())
+
+    pages = [patients_sorted[i:i + _PATIENTS_PER_PAGE]
+             for i in range(0, len(patients_sorted), _PATIENTS_PER_PAGE)]
+    for page_idx, page_patients in enumerate(pages):
+        n_pages = len(pages)
+        suffix = f" (page {page_idx + 1}/{n_pages})" if n_pages > 1 else ""
+        fig, ax = plt.subplots(figsize=(max(8, len(page_patients) * 0.5), 5))
+        x = np.arange(len(page_patients))
+        n_vals = [patient_segs[p]["normal"] for p in page_patients]
+        a_vals = [patient_segs[p]["abnormal"] for p in page_patients]
+        ax.bar(x, n_vals, label="Normal", color="#2ecc71", edgecolor="white")
+        ax.bar(x, a_vals, bottom=n_vals, label="Abnormal", color="#e74c3c", edgecolor="white")
+        ax.set_xticks(x)
+        ax.set_xticklabels(page_patients, rotation=45, ha="right", fontsize=8)
+        ax.set_ylabel("Segments")
+        ax.set_title(f"Segments per Patient{suffix}")
+        ax.legend(fontsize=8)
+        fig.tight_layout()
+        paths.append(_save_fig(fig, plots_dir, f"03b_segment_quality_patients_p{page_idx + 1}"))
+
+    return paths
 
 
 def _robust_xlim(vals: np.ndarray, margin: float = 3.0) -> Tuple[float, float]:
@@ -490,7 +518,7 @@ def plot_rr_statistics(file_infos: List[Dict], plots_dir: Path) -> Optional[str]
     return _save_fig(fig, plots_dir, "06_rr_statistics")
 
 
-def plot_disk_usage(file_infos: List[Dict], plots_dir: Path) -> Optional[str]:
+def plot_disk_usage(file_infos: List[Dict], plots_dir: Path) -> List[str]:
     cat_sizes = defaultdict(int)
     for f in file_infos:
         cat_sizes["segments"] += f.get("segments_size", 0)
@@ -501,42 +529,53 @@ def plot_disk_usage(file_infos: List[Dict], plots_dir: Path) -> Optional[str]:
     labels = [k for k, v in cat_sizes.items() if v > 0]
     sizes = [cat_sizes[k] for k in labels]
     if not sizes:
-        return None
+        return []
 
-    fig, axes = plt.subplots(1, 2, figsize=(11, 4.5))
-
+    # Summary pie chart
+    fig, ax = plt.subplots(figsize=(5, 4))
     colors = ["#3498db", "#2ecc71", "#e74c3c", "#f39c12"]
-    axes[0].pie(sizes, labels=labels, colors=colors[:len(labels)], autopct="%1.1f%%", startangle=90)
-    axes[0].set_title("Disk Usage by Category")
+    ax.pie(sizes, labels=labels, colors=colors[:len(labels)], autopct="%1.1f%%", startangle=90)
+    ax.set_title("Disk Usage by Category")
+    fig.tight_layout()
+    paths = [_save_fig(fig, plots_dir, "07a_disk_usage_summary")]
 
+    # Paginated per-patient disk usage
     per_patient: Dict[str, int] = defaultdict(int)
     for f in file_infos:
         pid = _extract_patient_id(f["path"])
-        per_patient[pid] += f.get("segments_size", 0) + f.get("rr_size", 0) + f.get("features_size", 0) + f.get("sqi_size", 0)
-
+        per_patient[pid] += (f.get("segments_size", 0) + f.get("rr_size", 0)
+                             + f.get("features_size", 0) + f.get("sqi_size", 0))
     pids = sorted(per_patient.keys())
-    p_sizes = [per_patient[p] / (1024 ** 2) for p in pids]
-    bars = axes[1].bar(range(len(pids)), p_sizes, color=sns.color_palette("Set2", len(pids)), edgecolor="white")
-    axes[1].set_xticks(range(len(pids)))
-    axes[1].set_xticklabels(pids, rotation=45, ha="right", fontsize=8)
-    axes[1].set_ylabel("Size (MB)")
-    axes[1].set_title("Disk Usage per Patient")
 
-    fig.tight_layout()
-    return _save_fig(fig, plots_dir, "07_disk_usage")
+    pages = [pids[i:i + _PATIENTS_PER_PAGE] for i in range(0, len(pids), _PATIENTS_PER_PAGE)]
+    for page_idx, page_pids in enumerate(pages):
+        n_pages = len(pages)
+        suffix = f" (page {page_idx + 1}/{n_pages})" if n_pages > 1 else ""
+        fig, ax = plt.subplots(figsize=(max(8, len(page_pids) * 0.5), 5))
+        p_sizes = [per_patient[p] / (1024 ** 2) for p in page_pids]
+        palette = sns.color_palette("Set2", len(page_pids))
+        ax.bar(range(len(page_pids)), p_sizes, color=palette, edgecolor="white")
+        ax.set_xticks(range(len(page_pids)))
+        ax.set_xticklabels(page_pids, rotation=45, ha="right", fontsize=8)
+        ax.set_ylabel("Size (MB)")
+        ax.set_title(f"Disk Usage per Patient{suffix}")
+        fig.tight_layout()
+        paths.append(_save_fig(fig, plots_dir, f"07b_disk_usage_patients_p{page_idx + 1}"))
+
+    return paths
 
 
-def plot_per_patient_quality_heatmap(file_infos: List[Dict], plots_dir: Path) -> Optional[str]:
+def plot_per_patient_quality_heatmap(file_infos: List[Dict], plots_dir: Path) -> List[str]:
     valid = [f for f in file_infos if f.get("sqi_error") is None and f.get("total_segments", 0) > 0]
     if len(valid) < 2:
-        return None
+        return []
 
     all_metrics = set()
     for f in valid:
         all_metrics.update(f.get("sqi_values", {}).keys())
     metrics = sorted(all_metrics)
     if not metrics:
-        return None
+        return []
 
     patients = sorted(set(_extract_patient_id(f["path"]) for f in valid))
     patient_metric_medians: Dict[str, Dict[str, float]] = {p: {} for p in patients}
@@ -567,16 +606,40 @@ def plot_per_patient_quality_heatmap(file_infos: List[Dict], plots_dir: Path) ->
     matrix_arr = np.array(matrix)
     short_metrics = [m.replace("_sqi", "").replace("_", " ") for m in metrics]
 
-    fig, ax = plt.subplots(figsize=(max(10, len(metrics) * 0.9), max(3, len(patients) * 0.6)))
-    sns.heatmap(matrix_arr, xticklabels=short_metrics, yticklabels=patients,
-                annot=True, fmt=".2f", cmap="RdYlGn", center=0, ax=ax,
-                linewidths=0.5, linecolor="white", cbar_kws={"label": "Median SQI"})
-    ax.set_title("Median SQI per Patient per Metric")
-    ax.tick_params(axis="x", labelsize=8, rotation=45)
-    ax.tick_params(axis="y", labelsize=9)
+    # Clip outliers per column so one extreme value doesn't ruin the color scale
+    finite_vals = matrix_arr[np.isfinite(matrix_arr)]
+    if len(finite_vals) > 0:
+        q01, q99 = np.nanpercentile(finite_vals, [1, 99])
+        display_arr = np.clip(matrix_arr, q01, q99)
+    else:
+        display_arr = matrix_arr
 
-    fig.tight_layout()
-    return _save_fig(fig, plots_dir, "08_patient_sqi_heatmap")
+    pages = [patients[i:i + _PATIENTS_PER_PAGE]
+             for i in range(0, len(patients), _PATIENTS_PER_PAGE)]
+    paths: List[str] = []
+    for page_idx, page_patients in enumerate(pages):
+        n_pages = len(pages)
+        suffix = f" (page {page_idx + 1}/{n_pages})" if n_pages > 1 else ""
+        start = page_idx * _PATIENTS_PER_PAGE
+        end = start + len(page_patients)
+        sub_display = display_arr[start:end]
+        sub_raw = matrix_arr[start:end]
+        # Show raw values in annotations but use clipped values for color
+        annot_strs = np.array([[f"{v:.2f}" if np.isfinite(v) else ""
+                                for v in row] for row in sub_raw])
+        fig, ax = plt.subplots(
+            figsize=(max(10, len(metrics) * 0.9), max(4, len(page_patients) * 0.45)))
+        sns.heatmap(sub_display, xticklabels=short_metrics, yticklabels=page_patients,
+                    annot=annot_strs, fmt="", cmap="RdYlGn", center=0, ax=ax,
+                    linewidths=0.5, linecolor="white", cbar_kws={"label": "Median SQI"},
+                    vmin=q01, vmax=q99)
+        ax.set_title(f"Median SQI per Patient per Metric{suffix}")
+        ax.tick_params(axis="x", labelsize=8, rotation=45)
+        ax.tick_params(axis="y", labelsize=9)
+        fig.tight_layout()
+        paths.append(_save_fig(fig, plots_dir, f"08_patient_sqi_heatmap_p{page_idx + 1}"))
+
+    return paths
 
 
 def plot_composite_scores(file_infos: List[Dict], plots_dir: Path) -> Optional[str]:
@@ -713,7 +776,7 @@ def generate_report(
     output_base: Path,
     file_infos: List[Dict[str, Any]],
     summary_info: Dict[str, Any],
-    plot_paths: Dict[str, Optional[str]],
+    plot_paths: Dict[str, Any],
 ) -> str:
     lines: List[str] = []
     w = lines.append
@@ -754,17 +817,16 @@ def generate_report(
     w("")
 
     if plot_paths.get("overview"):
-        w(f"![Processing Overview]({plot_paths['overview']})")
-        w("")
-        w("**How to read this chart:**")
+        _embed_plots(w, plot_paths["overview"], "Processing Overview")
+        w("**How to read these charts:**")
         w("")
         ecg_n = sig_counts.get("ECG", 0)
         ppg_n = sig_counts.get("PPG", 0)
-        w(f"- **Left panel — Files by Signal Type:** The dataset contains **{ecg_n} ECG** and **{ppg_n} PPG** recordings. "
+        w(f"- **Files by Signal Type (summary):** The dataset contains **{ecg_n} ECG** and **{ppg_n} PPG** recordings. "
            "ECG files come from the chest-lead sensor and PPG files from the pulse-oximeter (SmartCare).")
-        w(f"- **Middle panel — Files per Patient:** Stacked bars show how many ECG (red) and PPG (blue) files "
+        w(f"- **Files per Patient (detail pages):** Stacked bars show how many ECG (red) and PPG (blue) files "
            "each patient contributed. Uneven bar heights indicate variation in monitoring duration across patients.")
-        w(f"- **Right panel — Recording Hours per Patient:** Total recording hours stacked by signal type. "
+        w(f"- **Recording Hours per Patient (detail pages):** Total recording hours stacked by signal type. "
            "This helps spot patients with unusually short or long monitoring periods that may need investigation.")
         w("")
 
@@ -777,11 +839,10 @@ def generate_report(
        "the configured window size.")
     w("")
     if plot_paths.get("signal_duration"):
-        w(f"![Signal Types & Duration]({plot_paths['signal_duration']})")
-        w("")
-        w("**Interpretation:** The left panel shows the count breakdown by type. The right panel is a histogram of "
-           "recording durations — a cluster near zero indicates many brief connection attempts or sensor restarts. "
-           "The bulk of useful recordings typically falls in the multi-hour range.")
+        _embed_plots(w, plot_paths["signal_duration"], "Signal Types & Duration")
+        w("**Interpretation:** The left panel shows the proportional split of PPG vs ECG files. The right panel "
+           "is a histogram of recording durations — a cluster near zero indicates many brief connection attempts "
+           "or sensor restarts. The bulk of useful recordings typically falls in the multi-hour range.")
         w("")
 
     # ── 3. Completeness ──────────────────────────────────────────────────
@@ -861,11 +922,11 @@ def generate_report(
        "of normal vs abnormal segments across the dataset.")
     w("")
     if plot_paths.get("segment_quality"):
-        w(f"![Segment Quality]({plot_paths['segment_quality']})")
-        w("")
-        w("**Interpretation:** The left panel shows total normal vs abnormal counts. The right panel "
-           "breaks this down per patient, revealing whether quality issues are concentrated in specific "
-           "patients (e.g., due to poor sensor contact or excessive motion artefact) or distributed broadly.")
+        _embed_plots(w, plot_paths["segment_quality"], "Segment Quality")
+        w("**Interpretation:** The summary shows the overall normal vs abnormal split and the per-file normal "
+           "ratio distribution. The detail pages break this down per patient, revealing whether quality issues "
+           "are concentrated in specific patients (e.g., due to poor sensor contact or excessive motion artefact) "
+           "or distributed broadly.")
         w("")
 
     # ── 6. SQI Distributions ─────────────────────────────────────────────
@@ -915,8 +976,7 @@ def generate_report(
     if plot_paths.get("patient_heatmap"):
         w("### 6.3 Per-Patient SQI Heatmap")
         w("")
-        w(f"![Patient SQI Heatmap]({plot_paths['patient_heatmap']})")
-        w("")
+        _embed_plots(w, plot_paths["patient_heatmap"], "Patient SQI Heatmap")
         w("**How to read:** Each cell shows the median SQI value for one patient-metric combination. "
            "Darker cells indicate lower (worse) quality. Rows with consistently dark cells across "
            "multiple metrics may have systemic quality issues (e.g., poor electrode contact for the "
@@ -1039,11 +1099,12 @@ def generate_report(
     w(f"| **Total** | **{_sizeof_fmt(sum(cat_sizes.values()))}** |")
     w("")
     if plot_paths.get("disk"):
-        w(f"![Disk Usage]({plot_paths['disk']})")
-        w("")
-        w("**Interpretation:** The pie chart shows proportional storage. If segments consume >95% "
-           "of disk, consider whether all segment CSVs are needed for downstream work, or whether "
-           "only features and RR intervals suffice.")
+        _embed_plots(w, plot_paths["disk"], "Disk Usage")
+        w("**Interpretation:** The pie chart shows proportional storage by category. The per-patient "
+           "detail pages show how disk usage is distributed across patients — patients with more or "
+           "longer recordings naturally consume more space. If segments consume >95% of disk, consider "
+           "whether all segment CSVs are needed for downstream work, or whether only features and "
+           "RR intervals suffice.")
         w("")
 
     # ── 10. Data Quality Flags ───────────────────────────────────────────
@@ -1189,7 +1250,7 @@ def main():
     summary_info = analyse_summary(output_base)
 
     print("Generating plots ...")
-    plot_paths: Dict[str, Optional[str]] = {}
+    plot_paths: Dict[str, Any] = {}
     plot_paths["overview"] = plot_processing_overview(file_infos, plots_dir)
     plot_paths["signal_duration"] = plot_signal_type_and_duration(file_infos, plots_dir)
     plot_paths["segment_quality"] = plot_segment_quality(file_infos, plots_dir)
@@ -1200,7 +1261,9 @@ def main():
     plot_paths["patient_heatmap"] = plot_per_patient_quality_heatmap(file_infos, plots_dir)
     plot_paths["composite_scores"] = plot_composite_scores(file_infos, plots_dir)
     plot_paths["composite_components"] = plot_composite_components(file_infos, plots_dir)
-    print(f"  Saved {sum(1 for v in plot_paths.values() if v)} plot(s) to {plots_dir}")
+    n_plots = sum(len(v) if isinstance(v, list) else (1 if v else 0)
+                  for v in plot_paths.values())
+    print(f"  Saved {n_plots} plot(s) to {plots_dir}")
 
     print("Generating markdown report ...")
     report = generate_report(output_base, file_infos, summary_info, plot_paths)

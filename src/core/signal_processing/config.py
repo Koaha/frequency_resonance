@@ -62,6 +62,9 @@ class SignalConfig:
     peak_height_percentile: float = 95
     peak_distance: int = 5
 
+    # Output options
+    save_segments: bool = False
+
     # Feature extraction (slow — disable to only get SQI + RR)
     extract_features: bool = False
 
@@ -166,6 +169,7 @@ class SignalConfig:
             "primary_sqi": "primary_sqi",
             "peak_height_percentile": "peak_height_percentile",
             "peak_distance": "peak_distance",
+            "save_segments": "save_segments",
             "extract_features": "extract_features",
             "max_workers": "max_workers",
             "batch_size": "batch_size",
@@ -189,7 +193,8 @@ class SignalConfig:
                 min_trapz_ratio=raw_composite.get("min_trapz_ratio", 0.3),
                 max_rolling_var=raw_composite.get("max_rolling_var", 2.0),
                 weights=raw_composite.get("weights", [0.25, 0.20, 0.20, 0.20, 0.15]),
-                score_threshold=raw_composite.get("score_threshold", 0.5),
+                score_threshold=raw_composite.get("score_threshold", 0.7),
+                abs_max_sqi=raw_composite.get("abs_max_sqi", 10.0),
             )
 
         # Per-SQI config

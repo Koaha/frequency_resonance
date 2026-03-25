@@ -38,7 +38,9 @@ composite:
   min_trapz_ratio: 0.3          # flag if trapezoidal-area ratio < 0.3
   max_rolling_var: 2.0          # flag if local SQI variance > 2
   weights: [0.25, 0.20, 0.20, 0.20, 0.15]   # quantile, tail, z, trapz, var
-  score_threshold: 0.5          # abnormal if composite score < this
+  score_threshold: 0.7          # abnormal if composite score < this
+  abs_max_sqi: 10.0             # force abnormal if any metric |value| > this
+                                # (catches degenerate files with constant extreme values)
 
 # ── Per-metric SQI config ──────────────────────────────────────────────────
 # "enabled" controls whether the metric is computed (both modes).
@@ -102,6 +104,12 @@ sqi:
 # ── Peak detection ──────────────────────────────────────────────────────────
 peak_height_percentile: 95
 peak_distance: 5
+
+# ── Output options ───────────────────────────────────────────────────────────
+# save_segments: write per-window signal CSVs to segments/.
+#   These are large (~14 GB for the full dataset) and only needed if you plan
+#   to visually inspect individual windows.  Set to true to keep them.
+save_segments: false
 
 # ── Feature extraction ──────────────────────────────────────────────────────
 # HRV + morphology extraction is CPU-heavy (~2 min / segment).
