@@ -89,6 +89,69 @@ def _embed_plots(w, value, alt_text: str):
         w("")
 
 
+def _filter_by_signal(file_infos: List[Dict], signal: Optional[str]) -> List[Dict]:
+    """Return file_infos filtered to a specific signal type, or all if None."""
+    if signal is None:
+        return file_infos
+    return [f for f in file_infos if f.get("signal_type", "").upper() == signal.upper()]
+
+
+def _signal_groups(file_infos: List[Dict]) -> List[Tuple[Optional[str], str, str]]:
+    """Return (filter_value, label, suffix) tuples for total + each signal type present."""
+    types = set(f.get("signal_type", "N/A").upper() for f in file_infos)
+    groups: List[Tuple[Optional[str], str, str]] = [(None, "All Signals", "all")]
+    for t in sorted(types):
+        if t in ("PPG", "ECG"):
+            groups.append((t, t, t.lower()))
+    return groups
+
+
+def _split_sqi_by_quality(file_infos: List[Dict]) -> Tuple[
+    Dict[str, List[float]], Dict[str, List[float]]
+]:
+    """Split per-window SQI values into normal and abnormal groups
+    using the composite quality label for each window."""
+    normal_vals: Dict[str, List[float]] = defaultdict(list)
+    abnormal_vals: Dict[str, List[float]] = defaultdict(list)
+    for f in file_infos:
+        quality = f.get("composite_quality", [])
+        if not quality:
+            continue
+        for metric, vals in f.get("sqi_values", {}).items():
+            n = min(len(vals), len(quality))
+            for j in range(n):
+                if quality[j] == "normal":
+                    normal_vals[metric].append(vals[j])
+                else:
+                    abnormal_vals[metric].append(vals[j])
+    return dict(normal_vals), dict(abnormal_vals)
+
+
+def _split_rr_by_quality(file_infos: List[Dict]) -> Tuple[
+    List[float], List[float], List[float], List[float]
+]:
+    """Split RR means/stds into normal and abnormal groups.
+
+    Uses the per-file majority quality label (>50% normal windows → normal file).
+    """
+    norm_means, norm_stds = [], []
+    abn_means, abn_stds = [], []
+    for f in file_infos:
+        means = f.get("rr_means", [])
+        stds = f.get("rr_stds", [])
+        if not means:
+            continue
+        n_norm = f.get("normal_segments", 0)
+        n_abn = f.get("abnormal_segments", 0)
+        if n_norm >= n_abn:
+            norm_means.extend(means)
+            norm_stds.extend(stds)
+        else:
+            abn_means.extend(means)
+            abn_stds.extend(stds)
+    return norm_means, norm_stds, abn_means, abn_stds
+
+
 # ── scanning ─────────────────────────────────────────────────────────────────
 
 def find_file_output_dirs(output_base: Path) -> List[Path]:
@@ -359,6 +422,144 @@ def plot_segment_quality(file_infos: List[Dict], plots_dir: Path) -> List[str]:
     return paths
 
 
+def _plot_sqi_effect_group(
+    infos: List[Dict], plots_dir: Path, prefix: str, label: str,
+) -> List[str]:
+    """Violin, effect-size, and median dot plots for one signal group."""
+    import pandas as pd
+    norm_vals, abn_vals = _split_sqi_by_quality(infos)
+    all_metrics = sorted(set(list(norm_vals.keys()) + list(abn_vals.keys())))
+    if not all_metrics:
+        return []
+
+    short_map = {m: m.replace("_sqi", "").replace("_", " ").title() for m in all_metrics}
+    paths: List[str] = []
+
+    # --- 1. Split violin plot ---
+    rows_list = []
+    for m in all_metrics:
+        short = short_map[m]
+        nv = np.array([v for v in norm_vals.get(m, []) if np.isfinite(v)])
+        av = np.array([v for v in abn_vals.get(m, []) if np.isfinite(v)])
+        if len(nv) < 10 and len(av) < 10:
+            continue
+        combined = np.concatenate([nv, av]) if len(nv) + len(av) > 0 else np.array([0])
+        lo, hi = _robust_xlim(combined)
+        for v in nv:
+            if lo <= v <= hi:
+                rows_list.append({"Metric": short, "Group": "Normal", "Value": v})
+        for v in av:
+            if lo <= v <= hi:
+                rows_list.append({"Metric": short, "Group": "Abnormal", "Value": v})
+
+    if rows_list:
+        df = pd.DataFrame(rows_list)
+        fig, ax = plt.subplots(figsize=(14, 5.5))
+        sns.violinplot(data=df, x="Metric", y="Value", hue="Group",
+                       split=True, inner="quart", linewidth=0.8,
+                       palette={"Normal": "#2ecc71", "Abnormal": "#e74c3c"},
+                       ax=ax, density_norm="width")
+        ax.set_title(f"Split Violin (Normal vs Abnormal) — {label}", fontsize=12)
+        ax.tick_params(axis="x", labelsize=7, rotation=25)
+        ax.set_xlabel("")
+        ax.axhline(0, color="grey", ls="--", lw=0.5, alpha=0.5)
+        ax.legend(fontsize=8, loc="upper right")
+        fig.tight_layout()
+        paths.append(_save_fig(fig, plots_dir, f"{prefix}_violin"))
+
+    # --- 2. Effect-size bar chart ---
+    effect_sizes = []
+    for m in all_metrics:
+        short = short_map[m]
+        nv = np.array([v for v in norm_vals.get(m, []) if np.isfinite(v)])
+        av = np.array([v for v in abn_vals.get(m, []) if np.isfinite(v)])
+        if len(nv) < 10 or len(av) < 10:
+            continue
+        med_n = np.median(nv)
+        med_a = np.median(av)
+        mad_n = np.median(np.abs(nv - med_n)) * 1.4826
+        mad_a = np.median(np.abs(av - med_a)) * 1.4826
+        pooled_mad = np.sqrt((mad_n**2 + mad_a**2) / 2)
+        d = (med_a - med_n) / pooled_mad if pooled_mad > 1e-12 else 0
+        effect_sizes.append({"Metric": short, "Cohen_d": d, "abs_d": abs(d)})
+
+    if effect_sizes:
+        df_es = pd.DataFrame(effect_sizes).sort_values("abs_d", ascending=True)
+
+        fig2, ax2 = plt.subplots(figsize=(8, max(4, len(df_es) * 0.4)))
+        colors = ["#e74c3c" if d > 0 else "#3498db" for d in df_es["Cohen_d"]]
+        ax2.barh(df_es["Metric"], df_es["Cohen_d"], color=colors, edgecolor="white", height=0.6)
+        ax2.axvline(0, color="black", lw=0.8)
+        for thresh, _ in [(0.2, "small"), (0.5, "medium"), (0.8, "large")]:
+            ax2.axvline(thresh, color="#95a5a6", ls=":", lw=0.8, alpha=0.6)
+            ax2.axvline(-thresh, color="#95a5a6", ls=":", lw=0.8, alpha=0.6)
+        ax2.set_xlabel("Cohen's d  (red = abnormal higher, blue = abnormal lower)")
+        ax2.set_title(f"Effect Size — {label}", fontsize=12)
+        ax2.tick_params(axis="y", labelsize=8)
+        fig2.tight_layout()
+        paths.append(_save_fig(fig2, plots_dir, f"{prefix}_effect"))
+
+        # --- 3. Median dot plot ---
+        med_rows = []
+        for m in all_metrics:
+            short = short_map[m]
+            nv = np.array([v for v in norm_vals.get(m, []) if np.isfinite(v)])
+            av = np.array([v for v in abn_vals.get(m, []) if np.isfinite(v)])
+            if len(nv) < 10 or len(av) < 10:
+                continue
+            med_rows.append({
+                "Metric": short,
+                "median_normal": float(np.median(nv)),
+                "median_abnormal": float(np.median(av)),
+            })
+        if med_rows:
+            df_med = pd.DataFrame(med_rows)
+            df_med["abs_diff"] = (df_med["median_abnormal"] - df_med["median_normal"]).abs()
+            df_med = df_med.sort_values("abs_diff", ascending=True)
+
+            all_medians = np.concatenate([
+                df_med["median_normal"].values, df_med["median_abnormal"].values])
+            lo, hi = _robust_xlim(all_medians)
+
+            fig3, ax3 = plt.subplots(figsize=(10, max(4, len(df_med) * 0.4)))
+            y_pos = np.arange(len(df_med))
+            for i, (_, row) in enumerate(df_med.iterrows()):
+                x0 = np.clip(row["median_normal"], lo, hi)
+                x1 = np.clip(row["median_abnormal"], lo, hi)
+                ax3.plot([x0, x1], [i, i], color="#bdc3c7", lw=1.5, zorder=1)
+            norm_clipped = np.clip(df_med["median_normal"].values, lo, hi)
+            abn_clipped = np.clip(df_med["median_abnormal"].values, lo, hi)
+            ax3.scatter(norm_clipped, y_pos, color="#2ecc71", s=60,
+                        zorder=2, label="Normal", edgecolors="white", linewidth=0.5)
+            ax3.scatter(abn_clipped, y_pos, color="#e74c3c", s=60,
+                        zorder=2, label="Abnormal", marker="D", edgecolors="white", linewidth=0.5)
+            for i, (_, row) in enumerate(df_med.iterrows()):
+                for val, clr in [(row["median_normal"], "#2ecc71"),
+                                 (row["median_abnormal"], "#e74c3c")]:
+                    if val > hi or val < lo:
+                        ax3.annotate(f"{val:.1f}", xy=(np.clip(val, lo, hi), i),
+                                     fontsize=6, color=clr, ha="left", va="bottom")
+            ax3.set_yticks(y_pos)
+            ax3.set_yticklabels(df_med["Metric"], fontsize=8)
+            ax3.set_xlabel("Median SQI value")
+            ax3.set_title(f"Median SQI: Normal vs Abnormal — {label}", fontsize=11)
+            ax3.legend(fontsize=8, loc="lower right")
+            ax3.set_xlim(lo, hi)
+            ax3.grid(axis="x", alpha=0.3)
+            fig3.tight_layout()
+            paths.append(_save_fig(fig3, plots_dir, f"{prefix}_median"))
+
+    return paths
+
+
+def plot_sqi_effect_size(file_infos: List[Dict], plots_dir: Path) -> List[str]:
+    paths: List[str] = []
+    for sig_filter, label, suffix in _signal_groups(file_infos):
+        infos = _filter_by_signal(file_infos, sig_filter)
+        paths += _plot_sqi_effect_group(infos, plots_dir, f"06_{suffix}", label)
+    return paths
+
+
 def _robust_xlim(vals: np.ndarray, margin: float = 3.0) -> Tuple[float, float]:
     """Return (lo, hi) x-limits that exclude extreme outliers.
 
@@ -374,21 +575,25 @@ def _robust_xlim(vals: np.ndarray, margin: float = 3.0) -> Tuple[float, float]:
     return max(lo, vals.min()), min(hi, vals.max())
 
 
-def plot_sqi_distributions(file_infos: List[Dict], plots_dir: Path) -> Optional[str]:
+def _plot_sqi_dist_group(
+    infos: List[Dict], plots_dir: Path, prefix: str, label: str,
+) -> List[str]:
+    """Plot SQI distributions (overall + normal/abnormal) for one signal group."""
     all_vals: Dict[str, List[float]] = defaultdict(list)
-    for f in file_infos:
+    for f in infos:
         for metric, vals in f.get("sqi_values", {}).items():
             all_vals[metric].extend(vals)
 
     metrics = [m for m in all_vals if len(all_vals[m]) > 10]
     if not metrics:
-        return None
+        return []
 
     short_names = [m.replace("_sqi", "").replace("_", " ").title() for m in metrics]
-
     n = len(metrics)
     cols = min(3, n)
     rows = (n + cols - 1) // cols
+    paths: List[str] = []
+
     fig, axes = plt.subplots(rows, cols, figsize=(5 * cols, 3.5 * rows))
     if rows * cols == 1:
         axes = np.array([axes])
@@ -400,11 +605,9 @@ def plot_sqi_distributions(file_infos: List[Dict], plots_dir: Path) -> Optional[
         vals_clean = vals[np.isfinite(vals)]
         if len(vals_clean) == 0:
             continue
-
         lo, hi = _robust_xlim(vals_clean)
         vals_clipped = vals_clean[(vals_clean >= lo) & (vals_clean <= hi)]
         n_outliers = len(vals_clean) - len(vals_clipped)
-
         sns.histplot(vals_clipped, bins=40, kde=True, ax=ax,
                      color=sns.color_palette("husl", n)[i], edgecolor="white")
         q25, q50, q75 = np.percentile(vals_clean, [25, 50, 75])
@@ -422,19 +625,65 @@ def plot_sqi_distributions(file_infos: List[Dict], plots_dir: Path) -> Optional[
     for j in range(i + 1, len(axes_flat)):
         axes_flat[j].set_visible(False)
 
-    fig.suptitle("SQI Metric Distributions (all windows)", fontsize=13, y=1.01)
+    fig.suptitle(f"SQI Distributions — {label}", fontsize=13, y=1.01)
     fig.tight_layout()
-    return _save_fig(fig, plots_dir, "04_sqi_distributions")
+    paths.append(_save_fig(fig, plots_dir, f"{prefix}_distributions"))
+
+    norm_vals, abn_vals = _split_sqi_by_quality(infos)
+    if norm_vals or abn_vals:
+        fig2, axes2 = plt.subplots(rows, cols, figsize=(5 * cols, 3.5 * rows))
+        if rows * cols == 1:
+            axes2 = np.array([axes2])
+        axes2_flat = axes2.flatten()
+        for i, (metric, short) in enumerate(zip(metrics, short_names)):
+            ax = axes2_flat[i]
+            nv = np.array(norm_vals.get(metric, []), dtype=float)
+            av = np.array(abn_vals.get(metric, []), dtype=float)
+            nv = nv[np.isfinite(nv)]
+            av = av[np.isfinite(av)]
+            all_clean = np.concatenate([nv, av]) if len(nv) + len(av) > 0 else np.array([0])
+            lo, hi = _robust_xlim(all_clean)
+            if len(nv) > 5:
+                nv_c = nv[(nv >= lo) & (nv <= hi)]
+                sns.kdeplot(nv_c, ax=ax, color="#2ecc71", fill=True, alpha=0.35,
+                            label=f"Normal (n={len(nv):,})", linewidth=1.5)
+            if len(av) > 5:
+                av_c = av[(av >= lo) & (av <= hi)]
+                sns.kdeplot(av_c, ax=ax, color="#e74c3c", fill=True, alpha=0.35,
+                            label=f"Abnormal (n={len(av):,})", linewidth=1.5)
+            ax.set_title(short, fontsize=9)
+            ax.set_xlabel("")
+            ax.legend(fontsize=7)
+        for j in range(i + 1, len(axes2_flat)):
+            axes2_flat[j].set_visible(False)
+        fig2.suptitle(f"SQI Normal vs Abnormal — {label}", fontsize=13, y=1.01)
+        fig2.tight_layout()
+        paths.append(_save_fig(fig2, plots_dir, f"{prefix}_norm_abn"))
+
+    return paths
 
 
-def plot_sqi_boxplots(file_infos: List[Dict], plots_dir: Path) -> Optional[str]:
+def plot_sqi_distributions(file_infos: List[Dict], plots_dir: Path) -> List[str]:
+    paths: List[str] = []
+    for sig_filter, label, suffix in _signal_groups(file_infos):
+        infos = _filter_by_signal(file_infos, sig_filter)
+        paths += _plot_sqi_dist_group(infos, plots_dir, f"04_{suffix}", label)
+    return paths
+
+
+def _plot_sqi_box_group(
+    infos: List[Dict], plots_dir: Path, prefix: str, label: str,
+) -> List[str]:
+    """Plot SQI boxplots (overall + normal/abnormal) for one signal group."""
+    import pandas as pd
+
     all_vals: Dict[str, List[float]] = defaultdict(list)
-    for f in file_infos:
+    for f in infos:
         for metric, vals in f.get("sqi_values", {}).items():
             all_vals[metric].extend(vals)
     metrics = [m for m in all_vals if len(all_vals[m]) > 10]
     if not metrics:
-        return None
+        return []
 
     fig, ax = plt.subplots(figsize=(12, 5))
     data_for_box = []
@@ -452,29 +701,72 @@ def plot_sqi_boxplots(file_infos: List[Dict], plots_dir: Path) -> Optional[str]:
         patch.set_facecolor(color)
         patch.set_alpha(0.7)
     ax.set_ylabel("SQI Value")
-    ax.set_title("SQI Metric Comparison (box plot, extreme outliers clipped)")
+    ax.set_title(f"SQI Metric Comparison — {label}")
     ax.tick_params(axis="x", labelsize=8)
     ax.axhline(0, color="grey", ls="--", lw=0.5, alpha=0.5)
-
     fig.tight_layout()
-    return _save_fig(fig, plots_dir, "05_sqi_boxplots")
+    paths = [_save_fig(fig, plots_dir, f"{prefix}_boxplots")]
+
+    norm_vals, abn_vals = _split_sqi_by_quality(infos)
+    if norm_vals or abn_vals:
+        rows_list = []
+        for m in metrics:
+            short = m.replace("_sqi", "").replace("_", " ")
+            nv = [v for v in norm_vals.get(m, []) if np.isfinite(v)]
+            av = [v for v in abn_vals.get(m, []) if np.isfinite(v)]
+            combined = np.array(nv + av)
+            if len(combined) < 10:
+                continue
+            lo, hi = _robust_xlim(combined)
+            for v in nv:
+                if lo <= v <= hi:
+                    rows_list.append({"Metric": short, "Group": "Normal", "Value": v})
+            for v in av:
+                if lo <= v <= hi:
+                    rows_list.append({"Metric": short, "Group": "Abnormal", "Value": v})
+
+        if rows_list:
+            df = pd.DataFrame(rows_list)
+            fig2, ax2 = plt.subplots(figsize=(14, 5))
+            sns.boxplot(data=df, x="Metric", y="Value", hue="Group",
+                        palette={"Normal": "#2ecc71", "Abnormal": "#e74c3c"},
+                        showfliers=False, ax=ax2, linewidth=0.8)
+            ax2.set_title(f"SQI Normal vs Abnormal — {label}")
+            ax2.tick_params(axis="x", labelsize=7, rotation=20)
+            ax2.set_xlabel("")
+            ax2.axhline(0, color="grey", ls="--", lw=0.5, alpha=0.5)
+            ax2.legend(fontsize=8)
+            fig2.tight_layout()
+            paths.append(_save_fig(fig2, plots_dir, f"{prefix}_boxplots_norm_abn"))
+
+    return paths
 
 
-def plot_rr_statistics(file_infos: List[Dict], plots_dir: Path) -> Optional[str]:
+def plot_sqi_boxplots(file_infos: List[Dict], plots_dir: Path) -> List[str]:
+    paths: List[str] = []
+    for sig_filter, label, suffix in _signal_groups(file_infos):
+        infos = _filter_by_signal(file_infos, sig_filter)
+        paths += _plot_sqi_box_group(infos, plots_dir, f"05_{suffix}", label)
+    return paths
+
+
+def _plot_rr_group(
+    infos: List[Dict], plots_dir: Path, prefix: str, label: str,
+) -> List[str]:
+    """RR interval statistics (overall + normal/abnormal) for one signal group."""
     all_means = []
     all_stds = []
-    for f in file_infos:
+    for f in infos:
         all_means.extend(f.get("rr_means", []))
         all_stds.extend(f.get("rr_stds", []))
 
     all_means = np.array([m for m in all_means if np.isfinite(m)])
     all_stds = np.array([s for s in all_stds if np.isfinite(s)])
     if len(all_means) == 0:
-        return None
+        return []
 
     fig, axes = plt.subplots(1, 3, figsize=(14, 4.5))
 
-    # Clip means to robust range
     m_lo, m_hi = _robust_xlim(all_means)
     means_clipped = all_means[(all_means >= m_lo) & (all_means <= m_hi)]
     n_clip_m = len(all_means) - len(means_clipped)
@@ -490,7 +782,7 @@ def plot_rr_statistics(file_infos: List[Dict], plots_dir: Path) -> Optional[str]
     axes[0].set_title(title_m, fontsize=10)
     axes[0].legend()
 
-    # Clip stds to robust range
+    s_lo, s_hi = 0, 1
     if len(all_stds) > 0:
         s_lo, s_hi = _robust_xlim(all_stds)
         stds_clipped = all_stds[(all_stds >= s_lo) & (all_stds <= s_hi)]
@@ -503,7 +795,6 @@ def plot_rr_statistics(file_infos: List[Dict], plots_dir: Path) -> Optional[str]
             title_s += f"  ({n_clip_s:,} outliers clipped)"
         axes[1].set_title(title_s, fontsize=10)
 
-    # Scatter: clip both axes consistently
     if len(all_means) > 0 and len(all_stds) > 0 and len(all_means) == len(all_stds):
         mask = ((all_means >= m_lo) & (all_means <= m_hi) &
                 (all_stds >= s_lo) & (all_stds <= s_hi))
@@ -512,10 +803,77 @@ def plot_rr_statistics(file_infos: List[Dict], plots_dir: Path) -> Optional[str]
         axes[2].set_ylabel("Std RR (ms)")
         axes[2].set_title("Mean vs Std RR (outliers excluded)")
     else:
-        axes[2].text(0.5, 0.5, "Lengths differ", ha="center", va="center", transform=axes[2].transAxes)
+        axes[2].text(0.5, 0.5, "Lengths differ", ha="center", va="center",
+                     transform=axes[2].transAxes)
 
+    fig.suptitle(f"RR Interval Statistics — {label}", fontsize=13, y=1.02)
     fig.tight_layout()
-    return _save_fig(fig, plots_dir, "06_rr_statistics")
+    paths = [_save_fig(fig, plots_dir, f"{prefix}_rr_all")]
+
+    nm, ns, am, a_s = _split_rr_by_quality(infos)
+    nm = np.array([v for v in nm if np.isfinite(v)])
+    ns = np.array([v for v in ns if np.isfinite(v)])
+    am = np.array([v for v in am if np.isfinite(v)])
+    a_s = np.array([v for v in a_s if np.isfinite(v)])
+
+    if len(nm) > 10 or len(am) > 10:
+        fig2, axes2 = plt.subplots(1, 3, figsize=(14, 4.5))
+
+        combined_m = np.concatenate([nm, am]) if len(nm) + len(am) > 0 else all_means
+        cm_lo, cm_hi = _robust_xlim(combined_m)
+        combined_s = np.concatenate([ns, a_s]) if len(ns) + len(a_s) > 0 else all_stds
+        cs_lo, cs_hi = _robust_xlim(combined_s) if len(combined_s) > 0 else (0, 1)
+
+        if len(nm) > 5:
+            nc = nm[(nm >= cm_lo) & (nm <= cm_hi)]
+            sns.kdeplot(nc, ax=axes2[0], color="#2ecc71", fill=True, alpha=0.3,
+                        label=f"Normal (n={len(nm):,})", linewidth=1.5)
+        if len(am) > 5:
+            ac = am[(am >= cm_lo) & (am <= cm_hi)]
+            sns.kdeplot(ac, ax=axes2[0], color="#e74c3c", fill=True, alpha=0.3,
+                        label=f"Abnormal (n={len(am):,})", linewidth=1.5)
+        axes2[0].set_xlabel("Mean RR (ms)")
+        axes2[0].set_title("Mean RR — Normal vs Abnormal")
+        axes2[0].legend(fontsize=8)
+
+        if len(ns) > 5:
+            nc = ns[(ns >= cs_lo) & (ns <= cs_hi)]
+            sns.kdeplot(nc, ax=axes2[1], color="#2ecc71", fill=True, alpha=0.3,
+                        label=f"Normal (n={len(ns):,})", linewidth=1.5)
+        if len(a_s) > 5:
+            ac = a_s[(a_s >= cs_lo) & (a_s <= cs_hi)]
+            sns.kdeplot(ac, ax=axes2[1], color="#e74c3c", fill=True, alpha=0.3,
+                        label=f"Abnormal (n={len(a_s):,})", linewidth=1.5)
+        axes2[1].set_xlabel("Std RR (ms)")
+        axes2[1].set_title("RR Variability — Normal vs Abnormal")
+        axes2[1].legend(fontsize=8)
+
+        if len(nm) > 0 and len(nm) == len(ns):
+            m_mask = (nm >= cm_lo) & (nm <= cm_hi) & (ns >= cs_lo) & (ns <= cs_hi)
+            axes2[2].scatter(nm[m_mask], ns[m_mask], alpha=0.25, s=10, c="#2ecc71",
+                             label="Normal")
+        if len(am) > 0 and len(am) == len(a_s):
+            m_mask = (am >= cm_lo) & (am <= cm_hi) & (a_s >= cs_lo) & (a_s <= cs_hi)
+            axes2[2].scatter(am[m_mask], a_s[m_mask], alpha=0.4, s=15, c="#e74c3c",
+                             label="Abnormal", marker="x")
+        axes2[2].set_xlabel("Mean RR (ms)")
+        axes2[2].set_ylabel("Std RR (ms)")
+        axes2[2].set_title("Mean vs Std — Normal vs Abnormal")
+        axes2[2].legend(fontsize=8)
+
+        fig2.suptitle(f"RR Normal vs Abnormal — {label}", fontsize=13, y=1.02)
+        fig2.tight_layout()
+        paths.append(_save_fig(fig2, plots_dir, f"{prefix}_rr_norm_abn"))
+
+    return paths
+
+
+def plot_rr_statistics(file_infos: List[Dict], plots_dir: Path) -> List[str]:
+    paths: List[str] = []
+    for sig_filter, label, suffix in _signal_groups(file_infos):
+        infos = _filter_by_signal(file_infos, sig_filter)
+        paths += _plot_rr_group(infos, plots_dir, f"07_{suffix}", label)
+    return paths
 
 
 def plot_disk_usage(file_infos: List[Dict], plots_dir: Path) -> List[str]:
@@ -565,54 +923,57 @@ def plot_disk_usage(file_infos: List[Dict], plots_dir: Path) -> List[str]:
     return paths
 
 
-def plot_per_patient_quality_heatmap(file_infos: List[Dict], plots_dir: Path) -> List[str]:
-    valid = [f for f in file_infos if f.get("sqi_error") is None and f.get("total_segments", 0) > 0]
-    if len(valid) < 2:
-        return []
+def _build_patient_metric_matrix(
+    file_infos: List[Dict], metrics: List[str], patients: List[str],
+    quality_filter: Optional[str] = None,
+) -> np.ndarray:
+    """Build a (patients x metrics) matrix of median SQI values.
 
-    all_metrics = set()
-    for f in valid:
-        all_metrics.update(f.get("sqi_values", {}).keys())
-    metrics = sorted(all_metrics)
-    if not metrics:
-        return []
-
-    patients = sorted(set(_extract_patient_id(f["path"]) for f in valid))
-    patient_metric_medians: Dict[str, Dict[str, float]] = {p: {} for p in patients}
-
-    for f in valid:
+    If quality_filter is 'normal' or 'abnormal', only include windows with
+    that composite quality label.
+    """
+    accum: Dict[str, Dict[str, List[float]]] = {p: {m: [] for m in metrics} for p in patients}
+    for f in file_infos:
         pid = _extract_patient_id(f["path"])
+        if pid not in accum:
+            continue
+        quality = f.get("composite_quality", [])
         for m in metrics:
             vals = f.get("sqi_values", {}).get(m, [])
-            clean = [v for v in vals if np.isfinite(v)]
-            if clean:
-                existing = patient_metric_medians[pid].get(m, [])
-                if not isinstance(existing, list):
-                    existing = [existing]
-                existing.extend(clean)
-                patient_metric_medians[pid][m] = existing
+            n = min(len(vals), len(quality)) if quality else len(vals)
+            for j in range(n):
+                if quality_filter and quality:
+                    if quality[j] != quality_filter:
+                        continue
+                v = vals[j]
+                if np.isfinite(v):
+                    accum[pid][m].append(v)
+            if not quality and quality_filter is None:
+                accum[pid][m].extend(v for v in vals if np.isfinite(v))
 
     matrix = []
     for p in patients:
         row = []
         for m in metrics:
-            vals = patient_metric_medians[p].get(m, [])
-            if isinstance(vals, list) and vals:
-                row.append(float(np.median(vals)))
-            else:
-                row.append(np.nan)
+            vs = accum[p][m]
+            row.append(float(np.median(vs)) if vs else np.nan)
         matrix.append(row)
+    return np.array(matrix)
 
-    matrix_arr = np.array(matrix)
-    short_metrics = [m.replace("_sqi", "").replace("_", " ") for m in metrics]
 
-    # Clip outliers per column so one extreme value doesn't ruin the color scale
+def _render_heatmap_pages(
+    matrix_arr: np.ndarray, patients: List[str], short_metrics: List[str],
+    plots_dir: Path, filename_prefix: str, title_prefix: str,
+    cmap: str = "RdYlGn", center: Optional[float] = 0,
+    cbar_label: str = "Median SQI",
+) -> List[str]:
+    """Render paginated heatmap pages for a given matrix."""
     finite_vals = matrix_arr[np.isfinite(matrix_arr)]
-    if len(finite_vals) > 0:
-        q01, q99 = np.nanpercentile(finite_vals, [1, 99])
-        display_arr = np.clip(matrix_arr, q01, q99)
-    else:
-        display_arr = matrix_arr
+    if len(finite_vals) == 0:
+        return []
+    q05, q95 = np.nanpercentile(finite_vals, [5, 95])
+    vmin, vmax = q05, q95
+    display_arr = np.clip(matrix_arr, vmin, vmax)
 
     pages = [patients[i:i + _PATIENTS_PER_PAGE]
              for i in range(0, len(patients), _PATIENTS_PER_PAGE)]
@@ -624,21 +985,65 @@ def plot_per_patient_quality_heatmap(file_infos: List[Dict], plots_dir: Path) ->
         end = start + len(page_patients)
         sub_display = display_arr[start:end]
         sub_raw = matrix_arr[start:end]
-        # Show raw values in annotations but use clipped values for color
         annot_strs = np.array([[f"{v:.2f}" if np.isfinite(v) else ""
                                 for v in row] for row in sub_raw])
         fig, ax = plt.subplots(
-            figsize=(max(10, len(metrics) * 0.9), max(4, len(page_patients) * 0.45)))
+            figsize=(max(10, len(short_metrics) * 0.9), max(4, len(page_patients) * 0.45)))
         sns.heatmap(sub_display, xticklabels=short_metrics, yticklabels=page_patients,
-                    annot=annot_strs, fmt="", cmap="RdYlGn", center=0, ax=ax,
-                    linewidths=0.5, linecolor="white", cbar_kws={"label": "Median SQI"},
-                    vmin=q01, vmax=q99)
-        ax.set_title(f"Median SQI per Patient per Metric{suffix}")
+                    annot=annot_strs, fmt="", cmap=cmap, center=center, ax=ax,
+                    linewidths=0.5, linecolor="white", cbar_kws={"label": cbar_label},
+                    vmin=vmin, vmax=vmax)
+        ax.set_title(f"{title_prefix}{suffix}")
         ax.tick_params(axis="x", labelsize=8, rotation=45)
         ax.tick_params(axis="y", labelsize=9)
         fig.tight_layout()
-        paths.append(_save_fig(fig, plots_dir, f"08_patient_sqi_heatmap_p{page_idx + 1}"))
+        paths.append(_save_fig(fig, plots_dir, f"{filename_prefix}_p{page_idx + 1}"))
+    return paths
 
+
+def _plot_heatmap_group(
+    infos: List[Dict], plots_dir: Path, prefix: str, label: str,
+) -> List[str]:
+    """Heatmap set (all + normal + difference) for one signal group."""
+    valid = [f for f in infos if f.get("sqi_error") is None and f.get("total_segments", 0) > 0]
+    if len(valid) < 2:
+        return []
+
+    all_metrics = set()
+    for f in valid:
+        all_metrics.update(f.get("sqi_values", {}).keys())
+    metrics = sorted(all_metrics)
+    if not metrics:
+        return []
+
+    patients = sorted(set(_extract_patient_id(f["path"]) for f in valid))
+    short_metrics = [m.replace("_sqi", "").replace("_", " ") for m in metrics]
+
+    mat_all = _build_patient_metric_matrix(valid, metrics, patients)
+    paths = _render_heatmap_pages(mat_all, patients, short_metrics, plots_dir,
+                                  f"{prefix}_all", f"Median SQI (all) — {label}")
+
+    mat_norm = _build_patient_metric_matrix(valid, metrics, patients, quality_filter="normal")
+    paths += _render_heatmap_pages(mat_norm, patients, short_metrics, plots_dir,
+                                   f"{prefix}_normal", f"Median SQI (normal) — {label}")
+
+    mat_abn = _build_patient_metric_matrix(valid, metrics, patients, quality_filter="abnormal")
+    if np.any(np.isfinite(mat_abn)):
+        mat_diff = mat_abn - mat_norm
+        paths += _render_heatmap_pages(
+            mat_diff, patients, short_metrics, plots_dir,
+            f"{prefix}_diff", f"SQI Δ (abn − norm) — {label}",
+            cmap="coolwarm", center=0, cbar_label="Δ Median SQI",
+        )
+
+    return paths
+
+
+def plot_per_patient_quality_heatmap(file_infos: List[Dict], plots_dir: Path) -> List[str]:
+    paths: List[str] = []
+    for sig_filter, label, suffix in _signal_groups(file_infos):
+        infos = _filter_by_signal(file_infos, sig_filter)
+        paths += _plot_heatmap_group(infos, plots_dir, f"09_{suffix}", label)
     return paths
 
 
@@ -777,6 +1182,7 @@ def generate_report(
     file_infos: List[Dict[str, Any]],
     summary_info: Dict[str, Any],
     plot_paths: Dict[str, Any],
+    data_dir: Optional[Path] = None,
 ) -> str:
     lines: List[str] = []
     w = lines.append
@@ -828,6 +1234,51 @@ def generate_report(
            "each patient contributed. Uneven bar heights indicate variation in monitoring duration across patients.")
         w(f"- **Recording Hours per Patient (detail pages):** Total recording hours stacked by signal type. "
            "This helps spot patients with unusually short or long monitoring periods that may need investigation.")
+        w("")
+
+    # ── 1b. Missing patients ──────────────────────────────────────────────
+    if data_dir and data_dir.is_dir():
+        import re
+        expected_pids = sorted([
+            d.name for d in data_dir.iterdir()
+            if d.is_dir() and not d.name.startswith(".")
+        ])
+        # Per-patient signal type counts from output
+        patient_signals: Dict[str, Counter] = defaultdict(Counter)
+        for f in valid:
+            pid = _extract_patient_id(f["path"])
+            sig = f.get("signal_type", "N/A")
+            patient_signals[pid][sig] += 1
+
+        output_pids = set(patient_signals.keys())
+        missing_pids = [p for p in expected_pids if p not in output_pids]
+
+        w(f"### Patient Coverage ({len(output_pids)} of {len(expected_pids)} patients)")
+        w("")
+        if missing_pids:
+            w(f"**{len(missing_pids)} patients** in `data_dir` have no processed output yet:")
+            w("")
+            # Show as comma list for compactness
+            w(", ".join(f"`{p}`" for p in missing_pids))
+            w("")
+        else:
+            w("All patients in `data_dir` have processed output.")
+            w("")
+
+        # Per-patient PPG/ECG breakdown table
+        w("<details>")
+        w("<summary>Per-patient file counts (PPG / ECG)</summary>")
+        w("")
+        w("| Patient | ECG files | PPG files | Total |")
+        w("|---------|----------:|----------:|------:|")
+        for pid in expected_pids:
+            ecg_c = patient_signals[pid].get("ECG", 0)
+            ppg_c = patient_signals[pid].get("PPG", 0)
+            total = ecg_c + ppg_c
+            marker = " ⚠️" if total == 0 else ""
+            w(f"| `{pid}` | {ecg_c} | {ppg_c} | {total}{marker} |")
+        w("")
+        w("</details>")
         w("")
 
     # ── 2. Signal & Duration ─────────────────────────────────────────────
@@ -950,38 +1401,53 @@ def generate_report(
     w("")
     w("All metrics are z-score normalised. Values near 0 indicate typical quality; extreme positive or "
        "negative values indicate outlier windows. Plots below clip extreme outliers "
-       "(beyond Q25 - 3\u00d7IQR or Q75 + 3\u00d7IQR) to keep the main distribution visible — the title of each "
-       "subplot shows how many values were clipped and their percentage.")
+       "(beyond Q25 − 3×IQR or Q75 + 3×IQR) to keep the main distribution visible.")
+    w("")
+    w("> **Signal-type grouping:** Every plot in sections 6.1–6.4 is generated three times: "
+       "once for **all signals combined**, once for **PPG only**, and once for **ECG only**. "
+       "This lets you compare whether quality patterns differ between signal types.")
     w("")
     if plot_paths.get("sqi_dist"):
         w("### 6.1 Histograms with KDE")
         w("")
-        w(f"![SQI Distributions]({plot_paths['sqi_dist']})")
-        w("")
-        w("**How to read:** Each subplot shows the distribution of one SQI metric across all windows. "
-           "The dashed red line is the median, orange dotted lines mark Q25 and Q75. A narrow, symmetric "
-           "bell shape indicates consistent quality; a long tail or bimodal shape suggests a subset of "
-           "windows with different characteristics (e.g., noisy segments).")
+        _embed_plots(w, plot_paths["sqi_dist"], "SQI Distributions")
+        w("**How to read:** For each signal group, the first figure shows overall distributions. "
+           "The second overlays **normal** (green) and **abnormal** (red) windows, making it easy "
+           "to spot which metrics separate good from bad segments.")
         w("")
     if plot_paths.get("sqi_box"):
         w("### 6.2 Box Plot Comparison")
         w("")
-        w(f"![SQI Box Plots]({plot_paths['sqi_box']})")
+        _embed_plots(w, plot_paths["sqi_box"], "SQI Box Plots")
+        w("**How to read:** The overall box plot shows spread per metric. The side-by-side plot "
+           "compares normal (green) vs abnormal (red). Compare PPG and ECG to see whether "
+           "the same metrics are discriminative for both signal types.")
         w("")
-        w("**How to read:** Box plots allow comparison of the spread (IQR) and central tendency across "
-           "all metrics on a single axis. Wider boxes indicate greater variability. Metrics with many "
-           "fliers (dots outside the whiskers) have heavier-tailed distributions and may require "
-           "more robust thresholding.")
+    if plot_paths.get("sqi_effect"):
+        w("### 6.3 Normal vs Abnormal — Detailed Comparison")
+        w("")
+        _embed_plots(w, plot_paths["sqi_effect"], "SQI Normal vs Abnormal")
+        w("**How to read these three plots (shown per signal group):**")
+        w("")
+        w("- **Split violin:** Green (normal) and red (abnormal) half-violins. Differences in "
+           "shape or center indicate discriminative metrics.")
+        w("- **Effect size (Cohen's d):** Horizontal bar chart ranking metrics by discriminative "
+           "power. Dotted lines at 0.2 / 0.5 / 0.8 mark small / medium / large effects. "
+           "Red = abnormal higher, blue = abnormal lower.")
+        w("- **Median comparison (dot plot):** Green circles (normal) and red diamonds (abnormal) "
+           "connected by lines. Longer lines = bigger difference.")
+        w("")
+        w("Comparing the PPG and ECG effect-size plots reveals which quality metrics matter most "
+           "for each modality.")
         w("")
     if plot_paths.get("patient_heatmap"):
-        w("### 6.3 Per-Patient SQI Heatmap")
+        w("### 6.4 Per-Patient SQI Heatmap")
         w("")
         _embed_plots(w, plot_paths["patient_heatmap"], "Patient SQI Heatmap")
-        w("**How to read:** Each cell shows the median SQI value for one patient-metric combination. "
-           "Darker cells indicate lower (worse) quality. Rows with consistently dark cells across "
-           "multiple metrics may have systemic quality issues (e.g., poor electrode contact for the "
-           "entire admission). Columns that are uniformly dark suggest a metric that is generally "
-           "low across all patients — this may be inherent to the signal type rather than a quality problem.")
+        w("**How to read:** Three heatmap variants per signal group: (1) **all windows**, "
+           "(2) **normal-only**, and (3) **difference** (abnormal − normal, blue-white-red scale). "
+           "The difference heatmap directly highlights which metrics shift most per patient. "
+           "Separate PPG/ECG heatmaps let you spot modality-specific outlier patients.")
         w("")
 
     # ── 7. Composite SQI Scoring ────────────────────────────────────────
@@ -1064,19 +1530,15 @@ def generate_report(
        "may indicate arrhythmia, motion artefact, or missed/extra peak detections.")
     w("")
     if plot_paths.get("rr_stats"):
-        w(f"![RR Statistics]({plot_paths['rr_stats']})")
+        _embed_plots(w, plot_paths["rr_stats"], "RR Statistics")
+        w("**How to read these plots (shown for All Signals, PPG, and ECG separately):**")
         w("")
-        w("**How to read these plots:**")
-        w("")
-        w("- **Left — Mean RR Distribution:** Shows the central tendency of RR intervals per segment. "
-           "A peak around 800–1000 ms is typical (resting heart rate ~60–75 bpm). Outliers clipped from "
-           "the display edges indicate segments with physiologically implausible values, often caused by "
-           "noisy peak detection.")
-        w("- **Middle — RR Variability (Std):** The standard deviation of RR intervals within each segment. "
-           "Normal resting HRV produces Std values of 20–150 ms. Very high Std (>500 ms) often indicates "
-           "missed beats or artefacts rather than genuine variability.")
-        w("- **Right — Mean vs Std Scatter:** Each dot is one segment. Healthy segments cluster in the "
-           "bottom-left region (normal rate, low variability). Points far from this cluster warrant manual review.")
+        w("- **Overall plots:** Mean RR distribution, variability (Std), and scatter.")
+        w("- **Normal vs Abnormal overlay:** Compares RR characteristics between normal (green) "
+           "and abnormal (red) quality files. PPG and ECG are shown separately so you can see if "
+           "abnormal-quality segments have different heart rate patterns for each modality.")
+        w("- **Scatter:** Normal (green dots) vs abnormal (red crosses). Points far from the "
+           "normal cluster indicate genuine quality issues.")
         w("")
 
     # ── 9. Disk Usage ───────────────────────────────────────────────────
@@ -1235,6 +1697,20 @@ def main():
         print(f"ERROR: Output directory does not exist: {output_base}", file=sys.stderr)
         sys.exit(1)
 
+    # Resolve data_dir to identify expected patients
+    data_dir = None
+    config_path = Path(args.config) if args.config else project_root / "config.yaml"
+    try:
+        import yaml
+        with open(config_path) as f:
+            cfg_all = yaml.safe_load(f) or {}
+        raw_dd = cfg_all.get("data_dir", "")
+        if raw_dd:
+            dd = Path(raw_dd)
+            data_dir = dd if dd.is_absolute() else project_root / dd
+    except Exception:
+        pass
+
     report_path = Path(args.report_path) if args.report_path else output_base / "verification_report.md"
     plots_dir = output_base / PLOTS_SUBDIR
     plots_dir.mkdir(parents=True, exist_ok=True)
@@ -1256,6 +1732,7 @@ def main():
     plot_paths["segment_quality"] = plot_segment_quality(file_infos, plots_dir)
     plot_paths["sqi_dist"] = plot_sqi_distributions(file_infos, plots_dir)
     plot_paths["sqi_box"] = plot_sqi_boxplots(file_infos, plots_dir)
+    plot_paths["sqi_effect"] = plot_sqi_effect_size(file_infos, plots_dir)
     plot_paths["rr_stats"] = plot_rr_statistics(file_infos, plots_dir)
     plot_paths["disk"] = plot_disk_usage(file_infos, plots_dir)
     plot_paths["patient_heatmap"] = plot_per_patient_quality_heatmap(file_infos, plots_dir)
@@ -1266,7 +1743,8 @@ def main():
     print(f"  Saved {n_plots} plot(s) to {plots_dir}")
 
     print("Generating markdown report ...")
-    report = generate_report(output_base, file_infos, summary_info, plot_paths)
+    report = generate_report(output_base, file_infos, summary_info, plot_paths,
+                             data_dir=data_dir)
 
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(report)
