@@ -23,14 +23,41 @@ highcut: 20.0              # bandpass high (Hz)
 nperseg: 1024              # FFT segment length
 
 # ── SQI (Signal Quality Index) ──────────────────────────────────────────────
-# threshold_method: "value" (legacy per-metric cutoff) or "composite"
-#   (statistical scoring across all metrics — quantile, z-score, tail area,
-#    trapezoidal integration, rolling variance).
-# The "primary_sqi" is only used in "value" mode.
-threshold_method: composite     # "value" | "composite"
+# threshold_method controls which scorer is used:
+#   "value"            — legacy single-metric cutoff (uses primary_sqi below)
+#   "composite"        — legacy weighted composite scorer (uses composite: block)
+#   "robust_composite" — robust scale-agnostic scorer   (uses robust_composite: block)
+#                        Recommended for production use.  Immune to SQI unit/scale
+#                        differences.  Automatically detects noise regime.
+# The "primary_sqi" field is only used in "value" mode.
+threshold_method: robust_composite   # "value" | "composite" | "robust_composite"
 primary_sqi: signal_entropy_sqi
 
-# ── Composite threshold config (used when threshold_method == composite) ────
+robust_composite:
+  # ── Regime detection ──────────────────────────────────────────────────────
+  min_segments_for_gmm: 6          # min windows before GMM is attempted; shorter
+                                   # files fall back to MAD classification
+  heavy_noise_var_threshold: 0.02  # Var(rank_consensus) < this → no real quality structure
+  cross_corr_threshold: 0.25       # mean pairwise Spearman < this → metrics disagree
+                                   # (noise dominates, rank normalisation unreliable)
+  # ── BIMODAL detection (IQR space) ────────────────────────────────────────
+  bic_delta_threshold: 10.0        # BIC(k=1) - BIC(k=2) on IQR-normalised consensus
+                                   # must exceed this to confirm bimodal structure
+  min_cluster_ratio: 0.25          # min(GMM weights) / max(GMM weights) ≥ this
+                                   # prevents small outlier clusters being treated as bimodal
+  # ── MOSTLY_GOOD mode (MAD threshold) ─────────────────────────────────────
+  mad_multiplier: 2.0              # k in threshold = median − k×MAD (IQR consensus)
+                                   # k=2 ≈ keeps best ~95% of windows
+  # ── BIMODAL mode (GMM-2) ─────────────────────────────────────────────────
+  gmm_max_overlap: 0.30            # Bhattacharyya coeff ceiling; above this the
+                                   # two components are too close → fall back to MAD
+  gmm_n_init: 10                   # GMM random initialisations (reduces local-optima risk)
+  # ── HEAVY_NOISE mode (best-of-bad) ───────────────────────────────────────
+  heavy_noise_keep_fraction: 0.30  # keep top 30% of windows as normal in heavy-noise files
+  # ── Graceful degradation ──────────────────────────────────────────────────
+  flag_file_min_normal_fraction: 0.10  # flag file if < 10% windows are normal
+
+# ── Legacy composite config (used when threshold_method == composite) ────────
 composite:
   min_quantile: 10              # flag if quantile rank < 10th percentile
   max_tail_area: 0.05           # flag if tail probability > 5%

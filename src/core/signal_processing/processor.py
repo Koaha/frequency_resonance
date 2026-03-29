@@ -31,10 +31,16 @@ class SignalProcessingPipeline:
             # Per-metric SQI (values + legacy per-metric quality labels)
             all_sqi = self.signal_processor.compute_all_sqi(signal_data.signal)
 
-            # Composite scoring (if enabled — always compute for reporting)
+            # Composite / robust scoring (always compute for reporting)
             composite_result: Dict[str, Any] = {}
             if self.config.threshold_method == "composite":
                 composite_result = self.signal_processor.compute_composite_sqi(
+                    signal_data.signal
+                )
+                normal_segments = composite_result["normal_segments"]
+                abnormal_segments = composite_result["abnormal_segments"]
+            elif self.config.threshold_method == "robust_composite":
+                composite_result = self.signal_processor.compute_robust_sqi(
                     signal_data.signal
                 )
                 normal_segments = composite_result["normal_segments"]
@@ -129,12 +135,19 @@ class SignalProcessingPipeline:
                 sqi_result["primary_sqi"] = self.config.primary_sqi
 
             if composite_result:
-                sqi_result["composite"] = {
-                    "scores": composite_result.get("composite_scores", []),
-                    "quality": composite_result.get("quality", []),
+                composite_entry: Dict[str, Any] = {
+                    "scores":          composite_result.get("composite_scores", []),
+                    "quality":         composite_result.get("quality", []),
                     "score_threshold": composite_result.get("score_threshold", 0),
-                    "details": composite_result.get("details", {}),
+                    "details":         composite_result.get("details", {}),
                 }
+                # Robust-only fields (present only when threshold_method == robust_composite)
+                if "regime" in composite_result:
+                    composite_entry["regime"]          = composite_result["regime"]
+                    composite_entry["file_flagged"]    = composite_result["file_flagged"]
+                    composite_entry["normal_fraction"] = composite_result["normal_fraction"]
+                    composite_entry["regime_info"]     = composite_result["regime_info"]
+                sqi_result["composite"] = composite_entry
 
             # ── write files ──────────────────────────────────────────────
             _write_json(output_dirs["sqi"] / "sqi.json", sqi_result)

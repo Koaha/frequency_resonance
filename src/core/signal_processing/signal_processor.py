@@ -9,7 +9,7 @@ import datetime as dt
 from vitalDSP.utils.data_processing.data_loader import DataLoader
 from vitalDSP.signal_quality_assessment.signal_quality_index import SignalQualityIndex
 from .config import SignalConfig
-from .sqi_scorer import score_windows
+from .sqi_scorer import score_windows, robust_score_windows
 
 
 @dataclass
@@ -151,10 +151,8 @@ class SignalProcessor:
                 self.logger.warning(f"SQI method {method_name} failed: {exc}")
         return raw
 
-    def compute_composite_sqi(
-        self, signal: np.ndarray
-    ) -> Dict[str, Any]:
-        """Compute composite statistical SQI scores.
+    def compute_composite_sqi(self, signal: np.ndarray) -> Dict[str, Any]:
+        """Compute composite statistical SQI scores (legacy weighted scorer).
 
         Returns the full result dict from sqi_scorer.score_windows(), which
         includes composite_scores, quality labels, segment lists, and
@@ -171,18 +169,53 @@ class SignalProcessor:
             config=self.config.composite_config,
         )
 
+    def compute_robust_sqi(self, signal: np.ndarray) -> Dict[str, Any]:
+        """Compute robust scale-agnostic SQI scores.
+
+        Uses rank normalisation + consensus scoring + automatic regime detection
+        to classify segments without relying on hard-coded SQI units or thresholds.
+
+        Returns the full result dict from sqi_scorer.robust_score_windows():
+          composite_scores  — per-window consensus score (mean rank across metrics)
+          quality           — "normal" / "abnormal" per window
+          normal_segments   — (start_sample, end_sample) pairs
+          abnormal_segments — (start_sample, end_sample) pairs
+          regime            — detected noise regime string
+          file_flagged      — True if < flag_file_min_normal_fraction are normal
+          normal_fraction   — fraction of windows classified as normal
+          regime_info       — diagnostic statistics used for regime detection
+          details           — per-metric rank arrays + GMM info
+        """
+        window = self.config.fs * self.config.duration
+        step = self.config.fs * self.config.step_size
+        raw_vals = self.compute_raw_sqi_values(signal)
+        return robust_score_windows(
+            sqi_values=raw_vals,
+            signal=signal,
+            window=window,
+            step=step,
+            config=self.config.robust_config,
+        )
+
     def get_primary_segments(
         self, signal: np.ndarray
     ) -> Tuple[List[Tuple[int, int]], List[Tuple[int, int]]]:
         """Segmentation for downstream processing (RR, features).
 
-        Uses composite scoring when threshold_method == "composite",
-        otherwise falls back to the legacy single-metric threshold.
+        Dispatches to the appropriate scorer based on threshold_method:
+          "composite"        → legacy weighted composite scorer
+          "robust_composite" → robust scale-agnostic scorer
+          "value"            → single-metric threshold (legacy)
         """
         if self.config.threshold_method == "composite":
             result = self.compute_composite_sqi(signal)
             return result["normal_segments"], result["abnormal_segments"]
 
+        if self.config.threshold_method == "robust_composite":
+            result = self.compute_robust_sqi(signal)
+            return result["normal_segments"], result["abnormal_segments"]
+
+        # "value" — legacy single-metric threshold
         method_name = self.config.primary_sqi
         params = self.config.sqi_params(method_name)
 

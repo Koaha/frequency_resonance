@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from config.settings import load_config, resolve_path, BASE_DIR, DEFAULT_CONFIG_PATH
-from .sqi_scorer import CompositeConfig
+from .sqi_scorer import CompositeConfig, RobustConfig
 
 # Fallback when no sqi section exists in YAML
 _DEFAULT_SQI_ENTRY = {"enabled": True, "threshold": -2, "threshold_type": "below"}
@@ -53,10 +53,11 @@ class SignalConfig:
     data_format: str = "OUCRU_CSV"
 
     # SQI — thresholding
-    threshold_method: str = "composite"   # "value" | "composite"
+    threshold_method: str = "composite"   # "value" | "composite" | "robust_composite"
     primary_sqi: str = "signal_entropy_sqi"
     sqi_config: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     composite_config: CompositeConfig = field(default_factory=CompositeConfig)
+    robust_config: RobustConfig = field(default_factory=RobustConfig)
 
     # Peak detection
     peak_height_percentile: float = 95
@@ -73,7 +74,7 @@ class SignalConfig:
     batch_size: int = 100
 
     _VALID_SIGNAL_TYPES = ("auto", "PPG", "ECG")
-    _VALID_THRESHOLD_METHODS = ("value", "composite")
+    _VALID_THRESHOLD_METHODS = ("value", "composite", "robust_composite")
 
     def __post_init__(self):
         if self.mode not in ("directory", "file_list"):
@@ -183,7 +184,7 @@ class SignalConfig:
                     val = resolve_path(val)
                 kwargs[field_name] = val
 
-        # Composite threshold config
+        # Legacy composite threshold config
         raw_composite = cfg.get("composite", {})
         if raw_composite:
             kwargs["composite_config"] = CompositeConfig(
@@ -195,6 +196,24 @@ class SignalConfig:
                 weights=raw_composite.get("weights", [0.25, 0.20, 0.20, 0.20, 0.15]),
                 score_threshold=raw_composite.get("score_threshold", 0.7),
                 abs_max_sqi=raw_composite.get("abs_max_sqi", 10.0),
+            )
+
+        # Robust composite config
+        raw_robust = cfg.get("robust_composite", {})
+        if raw_robust:
+            kwargs["robust_config"] = RobustConfig(
+                min_segments_for_gmm=raw_robust.get("min_segments_for_gmm", 6),
+                heavy_noise_var_threshold=raw_robust.get("heavy_noise_var_threshold", 0.02),
+                cross_corr_threshold=raw_robust.get("cross_corr_threshold", 0.25),
+                bic_delta_threshold=raw_robust.get("bic_delta_threshold", 10.0),
+                min_cluster_ratio=raw_robust.get("min_cluster_ratio", 0.25),
+                mad_multiplier=raw_robust.get("mad_multiplier", 2.0),
+                gmm_max_overlap=raw_robust.get("gmm_max_overlap", 0.30),
+                gmm_n_init=raw_robust.get("gmm_n_init", 10),
+                heavy_noise_keep_fraction=raw_robust.get("heavy_noise_keep_fraction", 0.30),
+                flag_file_min_normal_fraction=raw_robust.get(
+                    "flag_file_min_normal_fraction", 0.10
+                ),
             )
 
         # Per-SQI config
